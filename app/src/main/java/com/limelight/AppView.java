@@ -450,6 +450,29 @@ public class AppView extends Activity implements AdapterFragmentCallbacks {
     public void onContextMenuClosed(Menu menu) {
     }
 
+    /**
+     * Productivity mode wants the desktop (multiple monitors), not whatever
+     * fullscreen mode a specific app's Sunshine launch command puts it in
+     * (Steam Big Picture, Unity fullscreen, etc.) — so whatever tile the
+     * user actually tapped, redirect to the PC's "Desktop" entry instead.
+     * The user can then open that software themselves from the real
+     * desktop, in its normal windowed form. Falls back to the tapped app
+     * unchanged if this PC has no app literally named "Desktop" (Sunshine's
+     * own convention for a no-command, plain-desktop-stream entry).
+     */
+    private NvApp resolveLaunchApp(NvApp tapped) {
+        if (!productivityMode) {
+            return tapped;
+        }
+        for (int i = 0; i < appGridAdapter.getCount(); i++) {
+            NvApp candidate = ((AppObject) appGridAdapter.getItem(i)).app;
+            if (candidate.getAppName().equalsIgnoreCase("Desktop")) {
+                return candidate;
+            }
+        }
+        return tapped;
+    }
+
     @Override
     public boolean onContextItemSelected(MenuItem item) {
         AdapterContextMenuInfo info = (AdapterContextMenuInfo) item.getMenuInfo();
@@ -460,14 +483,14 @@ public class AppView extends Activity implements AdapterFragmentCallbacks {
                 UiHelper.displayQuitConfirmationDialog(this, new Runnable() {
                     @Override
                     public void run() {
-                        ServerHelper.doStart(AppView.this, app.app, computer, managerBinder, productivityMode);
+                        ServerHelper.doStart(AppView.this, resolveLaunchApp(app.app), computer, managerBinder, productivityMode);
                     }
                 }, null);
                 return true;
 
             case START_OR_RESUME_ID:
                 // Resume is the same as start for us
-                ServerHelper.doStart(AppView.this, app.app, computer, managerBinder, productivityMode);
+                ServerHelper.doStart(AppView.this, resolveLaunchApp(app.app), computer, managerBinder, productivityMode);
                 return true;
 
             case QUIT_ID:
@@ -651,7 +674,7 @@ public class AppView extends Activity implements AdapterFragmentCallbacks {
                 if (lastRunningAppId != 0) {
                     openContextMenu(arg1);
                 } else {
-                    ServerHelper.doStart(AppView.this, app.app, computer, managerBinder, productivityMode);
+                    ServerHelper.doStart(AppView.this, resolveLaunchApp(app.app), computer, managerBinder, productivityMode);
                 }
             }
         });
