@@ -200,6 +200,43 @@ not, so this was checked rather than assumed:
   Android focusable text fields so the system keyboard triggers naturally,
   rather than intercepting input and drawing a custom on-screen keyboard.
 
+## Passthrough — turned out to already exist
+
+Before building anything, found that real Quest passthrough was **already a
+complete, working feature** in the inherited codebase: `XrRenderer.java`
+reads a `vrPassthrough` preference and passes it down through JNI to
+`xr_renderer.c`, which sets the actual OpenXR `environmentBlendMode` to
+alpha-blend (real passthrough, not a fake/simulated one) when the runtime
+supports it. It was just a manual checkbox in Stream Settings, with no tie to
+Gaming/Productivity at all, and defaulted OFF.
+
+**Decision**: default it ON for new installs (`DEFAULT_VR_PASSTHROUGH =
+true`), but leave it as the same sticky, user-controlled SharedPreference it
+already was. Explicitly **not** forcing it by tab/mode — an earlier plan to
+force passthrough on for Productivity and off for Gaming was scrapped
+because it would silently override a user's own choice every single launch,
+which contradicts "stays that way until a user decides not to use it."
+
+**Also threaded a `productivityMode` flag** from PcView's tab selection all
+the way to the Game/GameXR launch intent (`Game.EXTRA_PRODUCTIVITY_MODE`),
+through `AppView` and `ServerHelper.doStart`/`createStartIntent`, and the two
+paths that bypass AppView (PcView's own resume action, `ShortcutTrampoline`
+for home-screen shortcuts — both default it to `false`/Gaming since they
+have no tab context). Deliberately not used for anything yet — it exists so
+the multi-screen Productivity renderer (next) knows which kind of session
+it's in.
+
+## Reusing the user's own Horizon Home space — not possible
+
+Asked whether, when passthrough is off, the app could show the user's own
+personalized Horizon Home space (their decorated environment) as the
+background instead of a plain room. Researched rather than assumed:
+**no public OpenXR/Horizon OS API exposes a user's Home Space to third-party
+apps.** Horizon Home is the system shell's own environment, rendered only by
+the OS itself. The only real options for a non-passthrough background remain
+what the app already ships and controls itself (currently: a 360 photo, or a
+plain dark room) — not literally borrowing the user's own Home decor.
+
 ## Naming
 
 Renaming both the client and (if ever needed) the host fork is fine and
