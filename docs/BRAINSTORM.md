@@ -293,7 +293,10 @@ the fix is a full in-VR arrangement UI:
 - **Per-screen rotate control**, positioned above each individual floating
   screen — the user rotates a screen by hand until its content displays
   correctly, which is how orientation gets corrected without the app ever
-  needing to know real monitor geometry in advance.
+  needing to know real monitor geometry in advance. **Each press steps
+  exactly 90°** (0→90→180→270→0…), not a free/continuous drag — matching
+  the fact that a real monitor's rotation is always one of those four
+  states, never an arbitrary angle.
 - **A central control cluster above those**, containing an
   **Auto-arrange toggle**:
   - **Off**: free placement — each screen moved independently via the
