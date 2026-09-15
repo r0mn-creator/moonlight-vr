@@ -237,6 +237,20 @@ the OS itself. The only real options for a non-passthrough background remain
 what the app already ships and controls itself (currently: a 360 photo, or a
 plain dark room) — not literally borrowing the user's own Home decor.
 
+## Productivity mode always opens the Desktop, not the tapped app
+
+Sunshine's per-app launch commands often put the target software in its own
+fullscreen mode (Steam launches into Big Picture, Unity into a fullscreen
+player window, etc.) — the opposite of what Productivity mode is for.
+Sunshine has its own long-standing convention for this: an app literally
+named **"Desktop"** with no launch command, which just streams the desktop
+as-is. **Whatever tile the user taps while in Productivity mode now redirects
+to that PC's "Desktop" entry instead** (`AppView.resolveLaunchApp`) — they
+land on the real desktop with their monitors, and open Steam/Unity/whatever
+themselves, in its normal windowed form, same as they would sitting at the
+PC. Falls back to launching the tapped app unchanged if the PC has no app
+named "Desktop" (a user could have renamed or removed it).
+
 ## Naming
 
 Renaming both the client and (if ever needed) the host fork is fine and
