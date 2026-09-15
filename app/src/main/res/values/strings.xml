@@ -98,6 +98,9 @@
     <string name="mode_tab_productivity">🖥 Productivity</string>
     <string name="productivity_monitors_info">Uses this PC\'s own monitors if it has more than one, or adds virtual ones to make 3.</string>
     <string name="productivity_rate_label">Stream rate</string>
+    <string name="productivity_depth_label">3D depth effect</string>
+    <string name="off_label">Off</string>
+    <string name="on_label">On</string>
 
     <!-- General strings -->
     <string name="ip_hint">IP address of host PC</string>

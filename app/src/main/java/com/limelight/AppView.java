@@ -63,6 +63,7 @@ public class AppView extends Activity implements AdapterFragmentCallbacks {
     private boolean inForeground;
     private boolean showHiddenApps;
     private boolean productivityMode;
+    private boolean productivityDepth;
     private HashSet<Integer> hiddenAppIds = new HashSet<>();
 
     private final static int START_OR_RESUME_ID = 1;
@@ -83,6 +84,7 @@ public class AppView extends Activity implements AdapterFragmentCallbacks {
     // Deliberately NOT used to override passthrough — that's the user's own
     // sticky checkbox (on by default), unaffected by which tab launched it.
     public final static String PRODUCTIVITY_MODE_EXTRA = "ProductivityMode";
+    public final static String PRODUCTIVITY_DEPTH_EXTRA = "ProductivityDepth";
 
     private ComputerManagerService.ComputerManagerBinder managerBinder;
     private final ServiceConnection serviceConnection = new ServiceConnection() {
@@ -316,6 +318,7 @@ public class AppView extends Activity implements AdapterFragmentCallbacks {
 
         showHiddenApps = getIntent().getBooleanExtra(SHOW_HIDDEN_APPS_EXTRA, false);
         productivityMode = getIntent().getBooleanExtra(PRODUCTIVITY_MODE_EXTRA, false);
+        productivityDepth = getIntent().getBooleanExtra(PRODUCTIVITY_DEPTH_EXTRA, false);
         uuidString = getIntent().getStringExtra(UUID_EXTRA);
 
         SharedPreferences hiddenAppsPrefs = getSharedPreferences(HIDDEN_APPS_PREF_FILENAME, MODE_PRIVATE);
@@ -483,14 +486,14 @@ public class AppView extends Activity implements AdapterFragmentCallbacks {
                 UiHelper.displayQuitConfirmationDialog(this, new Runnable() {
                     @Override
                     public void run() {
-                        ServerHelper.doStart(AppView.this, resolveLaunchApp(app.app), computer, managerBinder, productivityMode);
+                        ServerHelper.doStart(AppView.this, resolveLaunchApp(app.app), computer, managerBinder, productivityMode, productivityDepth);
                     }
                 }, null);
                 return true;
 
             case START_OR_RESUME_ID:
                 // Resume is the same as start for us
-                ServerHelper.doStart(AppView.this, resolveLaunchApp(app.app), computer, managerBinder, productivityMode);
+                ServerHelper.doStart(AppView.this, resolveLaunchApp(app.app), computer, managerBinder, productivityMode, productivityDepth);
                 return true;
 
             case QUIT_ID:
@@ -674,7 +677,7 @@ public class AppView extends Activity implements AdapterFragmentCallbacks {
                 if (lastRunningAppId != 0) {
                     openContextMenu(arg1);
                 } else {
-                    ServerHelper.doStart(AppView.this, resolveLaunchApp(app.app), computer, managerBinder, productivityMode);
+                    ServerHelper.doStart(AppView.this, resolveLaunchApp(app.app), computer, managerBinder, productivityMode, productivityDepth);
                 }
             }
         });

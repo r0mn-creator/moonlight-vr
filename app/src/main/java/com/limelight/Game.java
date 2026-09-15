@@ -197,6 +197,9 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     // passthrough (that's the user's own sticky checkbox) — this is for the
     // multi-screen Productivity rendering work, still being built.
     public static final String EXTRA_PRODUCTIVITY_MODE = "ProductivityMode";
+    // User opted into the depth/stereo effect for a Productivity session.
+    // Off by default — see PcView's depth toggle.
+    public static final String EXTRA_PRODUCTIVITY_DEPTH = "ProductivityDepth";
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {

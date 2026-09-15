@@ -76,7 +76,12 @@ public class PcView extends Activity implements AdapterFragmentCallbacks {
     private TextView tabGaming, tabProductivity;
     private View productivityPanel;
     private TextView btnFps30, btnFps60;
+    private TextView btnDepthOff, btnDepthOn;
     private boolean productivity60fps = false;
+    // Off by default — real GPU cost (MiDaS depth model, ~13.5ms/inference
+    // even GPU-accelerated) for an effect flat desktop UI barely benefits
+    // from. Left available for anyone with headroom to spend on it.
+    private boolean productivityDepthOn = false;
     private boolean productivityMode = false;
     private final ServiceConnection serviceConnection = new ServiceConnection() {
         public void onServiceConnected(ComponentName className, IBinder binder) {
@@ -225,6 +230,8 @@ public class PcView extends Activity implements AdapterFragmentCallbacks {
         productivityPanel = findViewById(R.id.productivityPanel);
         btnFps30 = findViewById(R.id.btnFps30);
         btnFps60 = findViewById(R.id.btnFps60);
+        btnDepthOff = findViewById(R.id.btnDepthOff);
+        btnDepthOn = findViewById(R.id.btnDepthOn);
 
         tabGaming.setOnClickListener(new OnClickListener() {
             @Override
@@ -252,9 +259,24 @@ public class PcView extends Activity implements AdapterFragmentCallbacks {
                 renderFpsToggle();
             }
         });
+        btnDepthOff.setOnClickListener(new OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                productivityDepthOn = false;
+                renderDepthToggle();
+            }
+        });
+        btnDepthOn.setOnClickListener(new OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                productivityDepthOn = true;
+                renderDepthToggle();
+            }
+        });
 
         setProductivityMode(false);
         renderFpsToggle();
+        renderDepthToggle();
     }
 
     /** Quick crossfade instead of an instant cut when the panel background changes shade. */
@@ -334,6 +356,16 @@ public class PcView extends Activity implements AdapterFragmentCallbacks {
         btnFps60.setBackground(pill(productivity60fps));
         btnFps60.setTextColor(getResources().getColor(
                 productivity60fps ? R.color.ml_pill_active_text : R.color.ml_text_faint));
+    }
+
+    private void renderDepthToggle() {
+        btnDepthOff.setBackground(pill(!productivityDepthOn));
+        btnDepthOff.setTextColor(getResources().getColor(
+                productivityDepthOn ? R.color.ml_text_faint : R.color.ml_pill_active_text));
+
+        btnDepthOn.setBackground(pill(productivityDepthOn));
+        btnDepthOn.setTextColor(getResources().getColor(
+                productivityDepthOn ? R.color.ml_pill_active_text : R.color.ml_text_faint));
     }
 
     @Override
@@ -756,7 +788,7 @@ public class PcView extends Activity implements AdapterFragmentCallbacks {
         if (productivityMode && computer.rawAppList != null) {
             NvApp desktop = findDesktopApp(computer.rawAppList);
             if (desktop != null) {
-                ServerHelper.doStart(this, desktop, computer, managerBinder, true);
+                ServerHelper.doStart(this, desktop, computer, managerBinder, true, productivityDepthOn);
                 return;
             }
         }
@@ -767,6 +799,7 @@ public class PcView extends Activity implements AdapterFragmentCallbacks {
         i.putExtra(AppView.NEW_PAIR_EXTRA, newlyPaired);
         i.putExtra(AppView.SHOW_HIDDEN_APPS_EXTRA, showHiddenGames);
         i.putExtra(AppView.PRODUCTIVITY_MODE_EXTRA, productivityMode);
+        i.putExtra(AppView.PRODUCTIVITY_DEPTH_EXTRA, productivityDepthOn);
         startActivity(i);
     }
 
@@ -814,7 +847,7 @@ public class PcView extends Activity implements AdapterFragmentCallbacks {
                     return true;
                 }
 
-                ServerHelper.doStart(this, new NvApp("app", computer.details.runningGameId, false), computer.details, managerBinder, productivityMode);
+                ServerHelper.doStart(this, new NvApp("app", computer.details.runningGameId, false), computer.details, managerBinder, productivityMode, productivityDepthOn);
                 return true;
 
             case QUIT_ID:
