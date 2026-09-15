@@ -2,7 +2,9 @@ package com.limelight;
 
 import java.io.FileNotFoundException;
 import java.io.IOException;
+import java.io.StringReader;
 import java.net.UnknownHostException;
+import java.util.List;
 
 import com.limelight.binding.PlatformBinding;
 import com.limelight.binding.crypto.AndroidCryptoProvider;
@@ -193,6 +195,20 @@ public class PcView extends Activity implements AdapterFragmentCallbacks {
             noPcFoundLayout.setVisibility(View.INVISIBLE);
         }
         pcGridAdapter.notifyDataSetChanged();
+    }
+
+    private static NvApp findDesktopApp(String rawAppList) {
+        try {
+            List<NvApp> apps = NvHTTP.getAppListByReader(new StringReader(rawAppList));
+            for (NvApp app : apps) {
+                if (app.getAppName().equalsIgnoreCase("Desktop")) {
+                    return app;
+                }
+            }
+        } catch (Exception e) {
+            // Cached list was stale or unparsable — caller falls back to AppView.
+        }
+        return null;
     }
 
     // ---- Gaming / Productivity mode tabs --------------------------------
@@ -728,6 +744,21 @@ public class PcView extends Activity implements AdapterFragmentCallbacks {
         if (managerBinder == null) {
             Toast.makeText(PcView.this, getResources().getString(R.string.error_manager_not_running), Toast.LENGTH_LONG).show();
             return;
+        }
+
+        // Productivity has no reason to visit the app list at all — there is
+        // only ever one destination (the desktop), and the user opens
+        // whatever software they want themselves once they're on it. Skip
+        // straight to launching "Desktop" using the app list this PC's
+        // normal background polling has already cached. Falls through to
+        // the ordinary AppView flow below if that cache isn't populated yet
+        // or this PC has no app literally named "Desktop".
+        if (productivityMode && computer.rawAppList != null) {
+            NvApp desktop = findDesktopApp(computer.rawAppList);
+            if (desktop != null) {
+                ServerHelper.doStart(this, desktop, computer, managerBinder, true);
+                return;
+            }
         }
 
         Intent i = new Intent(this, AppView.class);
