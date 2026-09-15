@@ -303,7 +303,14 @@ the fix is a full in-VR arrangement UI:
     existing grab handles at the bottom of each screen (already built for
     the single-screen case, needs generalizing to N screens).
   - **On**: all screens snap side-by-side onto a shared curved "wall," and
-    four sliders appear:
+    four option buttons appear — **Curve**, **Distance**, **Height**,
+    **Space between**. Each button's slider is hidden until tapped:
+    - Tap a button → its slider opens, appearing above that button.
+    - Tap the same button again while its slider is open → slider closes.
+    - Tap a *different* option button while a slider is open → the open
+      slider is replaced by the newly-tapped one (only ever one slider
+      visible at a time, no separate close-then-open step needed).
+    - Tap anywhere else → whichever slider is open closes.
     - **Curve** — left: wall nearly flat (screens only slightly curved
       relative to each other); right: wall curves around toward just
       before the edge of the user's peripheral vision.
