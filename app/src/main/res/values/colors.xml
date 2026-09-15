@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Gaming / Productivity tab system. See BRAINSTORM.md in the repo root
+         for the design reasoning — these are the same tokens used in the
+         UI plan mockup. -->
+    <color name="ml_surface">#1b1e28</color>
+    <color name="ml_surface_raised">#232733</color>
+    <color name="ml_text_primary">#edeff4</color>
+    <color name="ml_text_dim">#9aa0b2</color>
+    <color name="ml_text_faint">#6b7186</color>
+
+    <color name="ml_accent_gaming">#ff9d52</color>
+    <color name="ml_accent_gaming_dim">#33ff9d52</color>
+
+    <color name="ml_accent_prod">#6fb6ff</color>
+    <color name="ml_accent_prod_dim">#336fb6ff</color>
+</resources>

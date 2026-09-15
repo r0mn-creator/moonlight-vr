@@ -49,8 +49,10 @@ import android.view.View.OnClickListener;
 import android.widget.AbsListView;
 import android.widget.AdapterView;
 import android.widget.AdapterView.OnItemClickListener;
+import android.widget.Button;
 import android.widget.ImageButton;
 import android.widget.RelativeLayout;
+import android.widget.TextView;
 import android.widget.Toast;
 import android.widget.AdapterView.AdapterContextMenuInfo;
 
@@ -65,6 +67,16 @@ public class PcView extends Activity implements AdapterFragmentCallbacks {
     private ShortcutHelper shortcutHelper;
     private ComputerManagerService.ComputerManagerBinder managerBinder;
     private boolean freezeUpdates, runningPolling, inForeground, completeOnCreateCalled;
+
+    // Gaming/Productivity mode tabs. UI only for now — no session parameters
+    // are actually sent yet; see BRAINSTORM.md for the design this is
+    // scaffolding for. The PC list itself (pcGridAdapter, above) is shared
+    // by both tabs on purpose.
+    private TextView tabGaming, tabProductivity;
+    private View productivityPanel;
+    private TextView tvMonitorCount, btnFps30, btnFps60;
+    private int productivityMonitors = 1;
+    private boolean productivity60fps = false;
     private final ServiceConnection serviceConnection = new ServiceConnection() {
         public void onServiceConnected(ComponentName className, IBinder binder) {
             final ComputerManagerService.ComputerManagerBinder localBinder =
@@ -168,6 +180,8 @@ public class PcView extends Activity implements AdapterFragmentCallbacks {
             helpButton.setVisibility(View.GONE);
         }
 
+        initializeModeTabs();
+
         getFragmentManager().beginTransaction()
             .replace(R.id.pcFragmentContainer, new AdapterFragment())
             .commitAllowingStateLoss();
@@ -180,6 +194,103 @@ public class PcView extends Activity implements AdapterFragmentCallbacks {
             noPcFoundLayout.setVisibility(View.INVISIBLE);
         }
         pcGridAdapter.notifyDataSetChanged();
+    }
+
+    // ---- Gaming / Productivity mode tabs --------------------------------
+    //
+    // Both tabs share the same pcGridAdapter/pcFragmentContainer above —
+    // this is the PC list, and it's deliberately never forked per tab.
+    // Selecting Productivity only reveals a settings drawer underneath it.
+    // Nothing here is wired to a real session yet; it's UI scaffolding to
+    // build the real prep-cmd/virtual-display work against later.
+
+    private void initializeModeTabs() {
+        tabGaming = findViewById(R.id.tabGaming);
+        tabProductivity = findViewById(R.id.tabProductivity);
+        productivityPanel = findViewById(R.id.productivityPanel);
+        tvMonitorCount = findViewById(R.id.tvMonitorCount);
+        btnFps30 = findViewById(R.id.btnFps30);
+        btnFps60 = findViewById(R.id.btnFps60);
+        Button btnMonitorMinus = findViewById(R.id.btnMonitorMinus);
+        Button btnMonitorPlus = findViewById(R.id.btnMonitorPlus);
+
+        tabGaming.setOnClickListener(new OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                setProductivityMode(false);
+            }
+        });
+        tabProductivity.setOnClickListener(new OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                setProductivityMode(true);
+            }
+        });
+        btnMonitorMinus.setOnClickListener(new OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                if (productivityMonitors > 1) {
+                    productivityMonitors--;
+                    renderMonitorCount();
+                }
+            }
+        });
+        btnMonitorPlus.setOnClickListener(new OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                if (productivityMonitors < 3) {
+                    productivityMonitors++;
+                    renderMonitorCount();
+                }
+            }
+        });
+        btnFps30.setOnClickListener(new OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                productivity60fps = false;
+                renderFpsToggle();
+            }
+        });
+        btnFps60.setOnClickListener(new OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                productivity60fps = true;
+                renderFpsToggle();
+            }
+        });
+
+        renderMonitorCount();
+        renderFpsToggle();
+    }
+
+    private void setProductivityMode(boolean productivity) {
+        productivityPanel.setVisibility(productivity ? View.VISIBLE : View.GONE);
+
+        tabGaming.setBackgroundColor(getResources().getColor(
+                productivity ? android.R.color.transparent : R.color.ml_accent_gaming_dim));
+        tabGaming.setTextColor(getResources().getColor(
+                productivity ? R.color.ml_text_dim : R.color.ml_accent_gaming));
+
+        tabProductivity.setBackgroundColor(getResources().getColor(
+                productivity ? R.color.ml_accent_prod_dim : android.R.color.transparent));
+        tabProductivity.setTextColor(getResources().getColor(
+                productivity ? R.color.ml_accent_prod : R.color.ml_text_dim));
+    }
+
+    private void renderMonitorCount() {
+        tvMonitorCount.setText(String.valueOf(productivityMonitors));
+    }
+
+    private void renderFpsToggle() {
+        btnFps30.setBackgroundColor(getResources().getColor(
+                productivity60fps ? android.R.color.transparent : R.color.ml_accent_prod_dim));
+        btnFps30.setTextColor(getResources().getColor(
+                productivity60fps ? R.color.ml_text_faint : R.color.ml_accent_prod));
+
+        btnFps60.setBackgroundColor(getResources().getColor(
+                productivity60fps ? R.color.ml_accent_prod_dim : android.R.color.transparent));
+        btnFps60.setTextColor(getResources().getColor(
+                productivity60fps ? R.color.ml_accent_prod : R.color.ml_text_faint));
     }
 
     @Override

@@ -93,6 +93,12 @@
     <string name="conn_terminated_msg">The connection was terminated.</string>
     <string name="error_code_prefix">Error code:</string>
 
+    <!-- Gaming / Productivity mode tabs (UI only for now — see BRAINSTORM.md) -->
+    <string name="mode_tab_gaming">🎮 Gaming</string>
+    <string name="mode_tab_productivity">🖥 Productivity</string>
+    <string name="productivity_monitors_label">Monitors</string>
+    <string name="productivity_rate_label">Stream rate</string>
+
     <!-- General strings -->
     <string name="ip_hint">IP address of host PC</string>
     <string name="searching_pc">Searching for host PCs on your local network…\n\n

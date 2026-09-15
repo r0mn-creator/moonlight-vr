@@ -7,13 +7,148 @@
     android:paddingTop="@dimen/activity_vertical_margin"
     tools:context=".PcView" >
 
+    <LinearLayout
+        android:id="@+id/modeTabBar"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_alignParentTop="true"
+        android:layout_toRightOf="@+id/settingsButton"
+        android:layout_toEndOf="@+id/settingsButton"
+        android:layout_marginBottom="6dp"
+        android:orientation="horizontal"
+        android:background="@color/ml_surface"
+        android:padding="6dp">
+
+        <TextView
+            android:id="@+id/tabGaming"
+            android:layout_width="wrap_content"
+            android:layout_height="48dp"
+            android:minWidth="150dp"
+            android:gravity="center"
+            android:paddingLeft="20dp"
+            android:paddingRight="20dp"
+            android:textSize="15sp"
+            android:textStyle="bold"
+            android:background="@color/ml_accent_gaming_dim"
+            android:textColor="@color/ml_accent_gaming"
+            android:text="@string/mode_tab_gaming"/>
+
+        <TextView
+            android:id="@+id/tabProductivity"
+            android:layout_width="wrap_content"
+            android:layout_height="48dp"
+            android:layout_marginStart="6dp"
+            android:minWidth="150dp"
+            android:gravity="center"
+            android:paddingLeft="20dp"
+            android:paddingRight="20dp"
+            android:textSize="15sp"
+            android:textStyle="bold"
+            android:background="@android:color/transparent"
+            android:textColor="@color/ml_text_dim"
+            android:text="@string/mode_tab_productivity"/>
+    </LinearLayout>
+
+    <LinearLayout
+        android:id="@+id/productivityPanel"
+        android:layout_width="fill_parent"
+        android:layout_height="wrap_content"
+        android:layout_alignParentBottom="true"
+        android:layout_toRightOf="@+id/settingsButton"
+        android:layout_toEndOf="@+id/settingsButton"
+        android:orientation="vertical"
+        android:background="@color/ml_surface"
+        android:padding="18dp"
+        android:visibility="gone">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:layout_marginBottom="16dp">
+
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:textSize="14sp"
+                android:textColor="@color/ml_text_dim"
+                android:text="@string/productivity_monitors_label"/>
+
+            <Button
+                android:id="@+id/btnMonitorMinus"
+                android:layout_width="48dp"
+                android:layout_height="48dp"
+                android:minWidth="0dp"
+                android:text="–"
+                android:textColor="@color/ml_text_primary"
+                android:background="@color/ml_surface_raised"/>
+
+            <TextView
+                android:id="@+id/tvMonitorCount"
+                android:layout_width="44dp"
+                android:layout_height="wrap_content"
+                android:gravity="center"
+                android:textSize="17sp"
+                android:textStyle="bold"
+                android:textColor="@color/ml_accent_prod"
+                android:text="1"/>
+
+            <Button
+                android:id="@+id/btnMonitorPlus"
+                android:layout_width="48dp"
+                android:layout_height="48dp"
+                android:minWidth="0dp"
+                android:text="+"
+                android:textColor="@color/ml_text_primary"
+                android:background="@color/ml_surface_raised"/>
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical">
+
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:textSize="14sp"
+                android:textColor="@color/ml_text_dim"
+                android:text="@string/productivity_rate_label"/>
+
+            <TextView
+                android:id="@+id/btnFps30"
+                android:layout_width="56dp"
+                android:layout_height="44dp"
+                android:gravity="center"
+                android:textStyle="bold"
+                android:background="@color/ml_accent_prod_dim"
+                android:textColor="@color/ml_accent_prod"
+                android:text="30"/>
+
+            <TextView
+                android:id="@+id/btnFps60"
+                android:layout_width="56dp"
+                android:layout_height="44dp"
+                android:layout_marginStart="6dp"
+                android:gravity="center"
+                android:background="@android:color/transparent"
+                android:textColor="@color/ml_text_faint"
+                android:text="60"/>
+        </LinearLayout>
+    </LinearLayout>
+
     <RelativeLayout
         android:id="@+id/pcFragmentContainer"
         android:layout_width="fill_parent"
         android:layout_height="wrap_content"
         android:gravity="center"
+        android:layout_below="@+id/modeTabBar"
+        android:layout_above="@+id/productivityPanel"
         android:layout_alignParentBottom="true"
-        android:layout_alignParentTop="true"
         android:layout_toRightOf="@+id/settingsButton"
         android:layout_toEndOf="@+id/settingsButton">
 
