@@ -258,6 +258,9 @@ public class PcView extends Activity implements AdapterFragmentCallbacks {
     private static final int MODE_SWITCH_MS = 220;
 
     private void setProductivityMode(boolean productivity) {
+        findViewById(R.id.pcViewRoot).setBackgroundColor(getResources().getColor(
+                productivity ? R.color.ml_bg_panel_productivity : R.color.ml_bg_panel_gaming));
+
         tabGaming.setBackground(pill(!productivity));
         tabGaming.setTextColor(getResources().getColor(
                 productivity ? R.color.ml_text_dim : R.color.ml_pill_active_text));
