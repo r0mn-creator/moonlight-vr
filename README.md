@@ -1,18 +1,33 @@
 <p align="center">
   <img src="moonlight-xr-logo-transparent.png" height="200" alt="moonlight-xr-logo"><br>
   <a href="https://ko-fi.com/moonlightxr">
-    <img src="https://img.shields.io/badge/ko--fi-support-FF5E5B?style=for-the-badge&logo=ko-fi&logoColor=white" height="35" alt="Ko-fi">
+    <img src="https://img.shields.io/badge/ko--fi-support%20the%20original-FF5E5B?style=for-the-badge&logo=ko-fi&logoColor=white" height="35" alt="Ko-fi">
   </a>
   <br>
   <a href="https://ko-fi.com/moonlightxr">
-    <strong>Support on Ko-fi</strong>
+    <strong>Support gilleece, the original Moonlight XR author, on Ko-fi</strong>
   </a>
 </p>
 
-# Moonlight XR
+# Moonlight VR *(working name)*
 
-A fork of [Moonlight for Android](https://github.com/moonlight-stream/moonlight-android) that
-runs as a native OpenXR application and shows the game stream in stereoscopic 3D on a headset.
+A fork of [Moonlight XR](https://github.com/Gilleece/moonlight-android-xr) by **Sean Gilleece** — itself a fork of
+[Moonlight for Android](https://github.com/moonlight-stream/moonlight-android) — which runs as a
+native OpenXR application and shows the game stream in stereoscopic 3D on a headset. All credit
+for the stereo/depth pipeline below belongs to gilleece's original work; please support it at the
+Ko-fi link above.
+
+## About this fork
+
+This fork adds a **Productivity mode** alongside the existing Gaming/remote-play experience:
+multi-monitor virtual desktops for real work (not just games) inside the headset, without losing
+what Moonlight already does well. Full design reasoning lives in
+[`docs/BRAINSTORM.md`](docs/BRAINSTORM.md). Status: early UI scaffolding, gearing toward Quest 3
+first. "Moonlight VR" is a working name — a rename is likely once the project has an identity
+distinct enough not to be confused with full local wireless VR rendering tools like Virtual
+Desktop, which this is not.
+
+## How the existing stereo/depth pipeline works
 
 The stereo is generated entirely on the headset. A normal mono stream arrives from the PC exactly
 as stock Moonlight receives it, a depth model runs on the frame, and a depth image based rendering
