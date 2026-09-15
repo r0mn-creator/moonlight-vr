@@ -251,6 +251,85 @@ themselves, in its normal windowed form, same as they would sitting at the
 PC. Falls back to launching the tapped app unchanged if the PC has no app
 named "Desktop" (a user could have renamed or removed it).
 
+## Multi-screen rendering — scoping notes (2026-09-15)
+
+Explored `xr-renderer/xr_renderer.c` to scope the actual "3 screens" work.
+Findings and decisions, in order:
+
+**The renderer is single-screen today.** `XrCtx` holds one flat `screenPose`,
+one `screenWidth`, one video swapchain — not an array. But the existing
+stereo "3D effect" already proves the needed trick: it shows each eye a
+different **half** of the same decoded video texture via
+`XrCompositionLayerQuad.subImage.imageRect` (a real OpenXR sub-rect sample,
+no shader work). Splitting into thirds instead of halves, one flat quad per
+screen, is the same mechanism — not new architecture.
+
+**Depth/stereo is Gaming-only now.** Given the frozen-Gaming/
+Productivity-is-the-focus rule, Productivity's screens default to flat/mono
+(no MiDaS pass) — shipped as a real Off/On toggle in the settings drawer,
+**off by default**. MiDaS is already GPU-accelerated via TFLite's GPU
+delegate (measured ~13.5ms/inference vs 183-265ms CPU, per an existing
+in-code benchmark comment) but it's real cost for an effect flat desktop UI
+barely benefits from. When a user opts in, the plan is to run the same
+per-screen (3x the inference cost) — not yet built, opt-in only.
+
+**Equal-thirds splitting is WRONG for mixed monitor orientations —
+caught before writing code.** GameStream/Sunshine's protocol has no concept
+of "multiple monitors" at all: it reports one combined image size and
+nothing else. Windows' extended desktop is one virtual canvas; two identical
+landscape monitors happen to make a clean 2x-wide rectangle, but add one
+portrait monitor and the combined canvas becomes an irregular shape (e.g.
+two 1920x1080s + one 1080x1920 monitor could report as roughly 4920x1920,
+with the landscape monitors only filling part of that height). There is no
+wire-level way to ask the stream which pixels belong to which monitor, so
+naive equal-width splitting would crop/misplace content the moment monitors
+don't match — which is the user's own real 3-monitor PC (2 landscape + 1
+portrait), not a hypothetical edge case.
+
+**Resolved with direct manipulation instead of configuration data entry.**
+Rather than making the user pre-enter each monitor's resolution/orientation,
+the fix is a full in-VR arrangement UI:
+
+- **Per-screen rotate control**, positioned above each individual floating
+  screen — the user rotates a screen by hand until its content displays
+  correctly, which is how orientation gets corrected without the app ever
+  needing to know real monitor geometry in advance.
+- **A central control cluster above those**, containing an
+  **Auto-arrange toggle**:
+  - **Off**: free placement — each screen moved independently via the
+    existing grab handles at the bottom of each screen (already built for
+    the single-screen case, needs generalizing to N screens).
+  - **On**: all screens snap side-by-side onto a shared curved "wall," and
+    four sliders appear:
+    - **Curve** — left: wall nearly flat (screens only slightly curved
+      relative to each other); right: wall curves around toward just
+      before the edge of the user's peripheral vision.
+    - **Distance** — left: pushes the wall further away; right: pulls it
+      closer.
+    - **Height** — left: lowers the wall; right: raises it.
+    - **Space between** — left: screens touch edge-to-edge; right: screens
+      spread apart.
+  - All of this is VR-space geometry (positions/curvature of floating
+    panels), not anything sent to the host — purely a client-side placement
+    system layered on top of however many screens are actually being
+    rendered.
+
+**Phasing, to avoid building all of this at once**:
+- **Phase 1** (next, not started): get 3 flat screens rendering at all, in a
+  fixed default wall arrangement (sensible constant curve/distance/height/
+  spacing, no interactive controls yet). This isolates the real technical
+  risk — generalizing `XrCtx`'s screen state to an array of 3 and correctly
+  slicing/submitting 3 composition layer quads — from the much larger
+  arrangement-UI feature below it.
+- **Phase 2**: the full control cluster (per-screen rotate, auto-arrange
+  toggle, the four sliders, generalized free-placement grab handles) on top
+  of a renderer already proven to work.
+- **Also needed, not yet scoped in detail**: requesting a wide stream
+  resolution from the host for Productivity sessions (currently
+  `PreferenceConfiguration.width/height` is a single global value, same
+  pattern as the `productivityMode`/`productivityDepth` flags already
+  threaded through the launch intent).
+
 ## Naming
 
 Renaming both the client and (if ever needed) the host fork is fine and
