@@ -1,9 +1,41 @@
 # VR Moonlight fork — Gaming + Productivity modes (living doc)
 
-Status: **brainstorming only, nothing built yet.** This doc exists so the idea
-survives between sessions. Append to it as the idea evolves; don't let it go
-stale silently — if a decision below gets superseded, mark it rather than
-deleting it, so the reasoning isn't lost.
+Status: **real repo started, 2026-09-15.** Public repo:
+https://github.com/r0mn-creator/moonlight-vr — cloned from the private
+`moonlight-android-xr-fork` (itself built on Sean Gilleece's
+[Moonlight XR](https://github.com/Gilleece/moonlight-android-xr), which is
+itself a fork of official Moonlight for Android). This doc is now also
+mirrored into the repo at `docs/BRAINSTORM.md`; keep both in sync, or treat
+the in-repo copy as canonical going forward and just leave this one as the
+pre-repo history. Don't let it go stale silently — if a decision below gets
+superseded, mark it rather than deleting it, so the reasoning isn't lost.
+
+**First real commits**: a Gaming/Productivity tab bar added to `PcView`
+(`activity_pc_view.xml`, both portrait and land, plus `PcView.java`) — the
+existing PC grid (`pcGridAdapter`) stays shared and untouched under both
+tabs, Productivity reveals a settings drawer underneath it (monitor stepper
+1-3, 30/60fps toggle). **UI only — no real session parameters are sent yet**,
+per the "start easy, plug in the real code later" instruction. Local project:
+`/home/roman/Android/MoonlightVR`.
+
+**Attribution note, resolved**: the inherited README carried Sean Gilleece's
+personal Ko-fi link for the stereo/depth work he built. Kept it, but
+relabeled clearly as supporting the original author rather than this fork,
+and linked his actual repo (verified via `gh api users/Gilleece` — the git
+commit author name "gilleece" was lowercase and didn't match his real GitHub
+casing, `Gilleece`). Worth remembering as a general lesson: **verify a GitHub
+handle via the API before publishing a credit link built from a git commit
+author name** — casing/actual-username can differ from what git log shows.
+
+**Confirmed mechanism for the "3D effect" to preserve** (from reading the
+inherited README, not just prior assumption): monocular depth model (MiDaS
+small) runs on-device on the decoded frame, upsampled and guided by the
+colour frame, then a depth-image-based-rendering shader synthesizes a
+separate per-eye view — entirely client-side, host never knows it's VR. This
+directly confirms the earlier open question ("is the 3D effect per-surface
+already?") is still open — haven't yet checked whether this pipeline assumes
+a single decoded stream/texture or could run per-panel for Productivity's
+up-to-three screens.
 
 ## The core idea
 
