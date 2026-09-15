@@ -107,7 +107,7 @@
         <!-- Meta Quest device gate for the VR activity -->
         <meta-data
             android:name="com.oculus.supportedDevices"
-            android:value="quest2|questpro|quest3" />
+            android:value="quest2|questpro|quest3|quest3s" />
 
         <provider
             android:name=".PosterContentProvider"
