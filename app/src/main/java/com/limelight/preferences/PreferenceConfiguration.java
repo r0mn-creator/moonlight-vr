@@ -121,7 +121,10 @@ public class PreferenceConfiguration {
     private static final int DEFAULT_VR_CURVATURE = 0;
     private static final String DEFAULT_VR_DEPTH_SOURCE = "model";
     private static final boolean DEFAULT_VR_EYE_SWAP = false;
-    private static final boolean DEFAULT_VR_PASSTHROUGH = false;
+    // On by default for new installs; the checkbox is sticky after that —
+    // this is a stored preference, so once a user changes it, it stays
+    // changed until they touch it again.
+    private static final boolean DEFAULT_VR_PASSTHROUGH = true;
     private static final boolean DEFAULT_VR_GAZE = true;
     private static final boolean DEFAULT_VR_POINTER = true;
     // Tenths of a percent of frame width. 5 measured comfortable on device and

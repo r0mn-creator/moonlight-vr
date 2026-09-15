@@ -75,6 +75,7 @@ public class PcView extends Activity implements AdapterFragmentCallbacks {
     private View productivityPanel;
     private TextView btnFps30, btnFps60;
     private boolean productivity60fps = false;
+    private boolean productivityMode = false;
     private final ServiceConnection serviceConnection = new ServiceConnection() {
         public void onServiceConnected(ComponentName className, IBinder binder) {
             final ComputerManagerService.ComputerManagerBinder localBinder =
@@ -276,6 +277,7 @@ public class PcView extends Activity implements AdapterFragmentCallbacks {
     private static final int MODE_SWITCH_MS = 220;
 
     private void setProductivityMode(boolean productivity) {
+        productivityMode = productivity;
         animatePanelBackground(productivity ? R.color.ml_bg_panel_productivity : R.color.ml_bg_panel_gaming);
 
         tabGaming.setBackground(pill(!productivity));
@@ -733,6 +735,7 @@ public class PcView extends Activity implements AdapterFragmentCallbacks {
         i.putExtra(AppView.UUID_EXTRA, computer.uuid);
         i.putExtra(AppView.NEW_PAIR_EXTRA, newlyPaired);
         i.putExtra(AppView.SHOW_HIDDEN_APPS_EXTRA, showHiddenGames);
+        i.putExtra(AppView.PRODUCTIVITY_MODE_EXTRA, productivityMode);
         startActivity(i);
     }
 
@@ -780,7 +783,7 @@ public class PcView extends Activity implements AdapterFragmentCallbacks {
                     return true;
                 }
 
-                ServerHelper.doStart(this, new NvApp("app", computer.details.runningGameId, false), computer.details, managerBinder);
+                ServerHelper.doStart(this, new NvApp("app", computer.details.runningGameId, false), computer.details, managerBinder, productivityMode);
                 return true;
 
             case QUIT_ID:

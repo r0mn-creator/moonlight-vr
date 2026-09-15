@@ -193,6 +193,10 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     public static final String EXTRA_APP_HDR = "HDR";
     public static final String EXTRA_SERVER_CERT = "ServerCert";
     public static final String EXTRA_RETURN_TO_PC_VIEW = "ReturnToPcView";
+    // Which PcView tab this session was launched from. Not used for
+    // passthrough (that's the user's own sticky checkbox) — this is for the
+    // multi-screen Productivity rendering work, still being built.
+    public static final String EXTRA_PRODUCTIVITY_MODE = "ProductivityMode";
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {

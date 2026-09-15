@@ -55,8 +55,10 @@ public class ServerHelper {
     }
 
     public static Intent createStartIntent(Activity parent, NvApp app, ComputerDetails computer,
-                                           ComputerManagerService.ComputerManagerBinder managerBinder) {
+                                           ComputerManagerService.ComputerManagerBinder managerBinder,
+                                           boolean productivityMode) {
         Intent intent = new Intent(parent, Game.class);
+        intent.putExtra(Game.EXTRA_PRODUCTIVITY_MODE, productivityMode);
         if (PreferenceConfiguration.readPreferences(parent).enableVrMode) {
             // Launch the activity that carries the VR intent category so
             // headset shells start us immersive instead of as a panel
@@ -86,12 +88,13 @@ public class ServerHelper {
     }
 
     public static void doStart(Activity parent, NvApp app, ComputerDetails computer,
-                               ComputerManagerService.ComputerManagerBinder managerBinder) {
+                               ComputerManagerService.ComputerManagerBinder managerBinder,
+                               boolean productivityMode) {
         if (computer.state == ComputerDetails.State.OFFLINE || computer.activeAddress == null) {
             Toast.makeText(parent, parent.getResources().getString(R.string.pair_pc_offline), Toast.LENGTH_SHORT).show();
             return;
         }
-        Intent intent = createStartIntent(parent, app, computer, managerBinder);
+        Intent intent = createStartIntent(parent, app, computer, managerBinder, productivityMode);
 
         // A headset shell keeps the 2d panels floating beside the stream, which
         // invites people to change settings mid stream and wait for something
