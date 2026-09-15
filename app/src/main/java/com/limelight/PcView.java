@@ -240,6 +240,24 @@ public class PcView extends Activity implements AdapterFragmentCallbacks {
         renderFpsToggle();
     }
 
+    /** Quick crossfade instead of an instant cut when the panel background changes shade. */
+    private void animatePanelBackground(int colorRes) {
+        final View root = findViewById(R.id.pcViewRoot);
+        int from = (root.getBackground() instanceof android.graphics.drawable.ColorDrawable)
+                ? ((android.graphics.drawable.ColorDrawable) root.getBackground()).getColor()
+                : getResources().getColor(R.color.ml_bg_panel_gaming);
+        int to = getResources().getColor(colorRes);
+        android.animation.ValueAnimator anim = android.animation.ValueAnimator.ofArgb(from, to);
+        anim.setDuration(MODE_SWITCH_MS);
+        anim.addUpdateListener(new android.animation.ValueAnimator.AnimatorUpdateListener() {
+            @Override
+            public void onAnimationUpdate(android.animation.ValueAnimator animation) {
+                root.setBackgroundColor((int) animation.getAnimatedValue());
+            }
+        });
+        anim.start();
+    }
+
     /** A filled, rounded pill for whichever tab/toggle option is selected. */
     private android.graphics.drawable.Drawable pill(boolean selected) {
         android.graphics.drawable.GradientDrawable d = new android.graphics.drawable.GradientDrawable();
@@ -258,8 +276,7 @@ public class PcView extends Activity implements AdapterFragmentCallbacks {
     private static final int MODE_SWITCH_MS = 220;
 
     private void setProductivityMode(boolean productivity) {
-        findViewById(R.id.pcViewRoot).setBackgroundColor(getResources().getColor(
-                productivity ? R.color.ml_bg_panel_productivity : R.color.ml_bg_panel_gaming));
+        animatePanelBackground(productivity ? R.color.ml_bg_panel_productivity : R.color.ml_bg_panel_gaming);
 
         tabGaming.setBackground(pill(!productivity));
         tabGaming.setTextColor(getResources().getColor(
