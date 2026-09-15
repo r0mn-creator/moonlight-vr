@@ -3,6 +3,7 @@
     xmlns:tools="http://schemas.android.com/tools"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
+    android:background="@color/ml_bg_panel"
     tools:context=".PcView" >
 
     <LinearLayout
@@ -14,7 +15,7 @@
         android:layout_marginTop="10dp"
         android:layout_marginBottom="6dp"
         android:orientation="horizontal"
-        android:background="@color/ml_surface"
+        android:background="@drawable/bg_tabbar_container"
         android:padding="6dp">
 
         <TextView
@@ -27,8 +28,6 @@
             android:paddingRight="20dp"
             android:textSize="15sp"
             android:textStyle="bold"
-            android:background="@color/ml_accent_gaming_dim"
-            android:textColor="@color/ml_accent_gaming"
             android:text="@string/mode_tab_gaming"/>
 
         <TextView
@@ -42,8 +41,6 @@
             android:paddingRight="20dp"
             android:textSize="15sp"
             android:textStyle="bold"
-            android:background="@android:color/transparent"
-            android:textColor="@color/ml_text_dim"
             android:text="@string/mode_tab_productivity"/>
     </LinearLayout>
 
@@ -53,53 +50,17 @@
         android:layout_height="wrap_content"
         android:layout_alignParentBottom="true"
         android:orientation="vertical"
-        android:background="@color/ml_surface"
+        android:background="@drawable/bg_drawer_panel"
         android:padding="18dp"
         android:visibility="gone">
 
-        <LinearLayout
+        <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:orientation="horizontal"
-            android:gravity="center_vertical"
-            android:layout_marginBottom="16dp">
-
-            <TextView
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:textSize="14sp"
-                android:textColor="@color/ml_text_dim"
-                android:text="@string/productivity_monitors_label"/>
-
-            <Button
-                android:id="@+id/btnMonitorMinus"
-                android:layout_width="48dp"
-                android:layout_height="48dp"
-                android:minWidth="0dp"
-                android:text="–"
-                android:textColor="@color/ml_text_primary"
-                android:background="@color/ml_surface_raised"/>
-
-            <TextView
-                android:id="@+id/tvMonitorCount"
-                android:layout_width="44dp"
-                android:layout_height="wrap_content"
-                android:gravity="center"
-                android:textSize="17sp"
-                android:textStyle="bold"
-                android:textColor="@color/ml_accent_prod"
-                android:text="1"/>
-
-            <Button
-                android:id="@+id/btnMonitorPlus"
-                android:layout_width="48dp"
-                android:layout_height="48dp"
-                android:minWidth="0dp"
-                android:text="+"
-                android:textColor="@color/ml_text_primary"
-                android:background="@color/ml_surface_raised"/>
-        </LinearLayout>
+            android:layout_marginBottom="16dp"
+            android:textSize="13.5sp"
+            android:textColor="@color/ml_text_faint"
+            android:text="@string/productivity_monitors_info"/>
 
         <LinearLayout
             android:layout_width="match_parent"
@@ -121,8 +82,6 @@
                 android:layout_height="44dp"
                 android:gravity="center"
                 android:textStyle="bold"
-                android:background="@color/ml_accent_prod_dim"
-                android:textColor="@color/ml_accent_prod"
                 android:text="30"/>
 
             <TextView
@@ -131,8 +90,6 @@
                 android:layout_height="44dp"
                 android:layout_marginStart="6dp"
                 android:gravity="center"
-                android:background="@android:color/transparent"
-                android:textColor="@color/ml_text_faint"
                 android:text="60"/>
         </LinearLayout>
     </LinearLayout>

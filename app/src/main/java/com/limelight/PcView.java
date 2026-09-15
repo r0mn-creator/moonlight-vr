@@ -49,7 +49,6 @@ import android.view.View.OnClickListener;
 import android.widget.AbsListView;
 import android.widget.AdapterView;
 import android.widget.AdapterView.OnItemClickListener;
-import android.widget.Button;
 import android.widget.ImageButton;
 import android.widget.RelativeLayout;
 import android.widget.TextView;
@@ -74,8 +73,7 @@ public class PcView extends Activity implements AdapterFragmentCallbacks {
     // by both tabs on purpose.
     private TextView tabGaming, tabProductivity;
     private View productivityPanel;
-    private TextView tvMonitorCount, btnFps30, btnFps60;
-    private int productivityMonitors = 1;
+    private TextView btnFps30, btnFps60;
     private boolean productivity60fps = false;
     private final ServiceConnection serviceConnection = new ServiceConnection() {
         public void onServiceConnected(ComponentName className, IBinder binder) {
@@ -208,11 +206,8 @@ public class PcView extends Activity implements AdapterFragmentCallbacks {
         tabGaming = findViewById(R.id.tabGaming);
         tabProductivity = findViewById(R.id.tabProductivity);
         productivityPanel = findViewById(R.id.productivityPanel);
-        tvMonitorCount = findViewById(R.id.tvMonitorCount);
         btnFps30 = findViewById(R.id.btnFps30);
         btnFps60 = findViewById(R.id.btnFps60);
-        Button btnMonitorMinus = findViewById(R.id.btnMonitorMinus);
-        Button btnMonitorPlus = findViewById(R.id.btnMonitorPlus);
 
         tabGaming.setOnClickListener(new OnClickListener() {
             @Override
@@ -224,24 +219,6 @@ public class PcView extends Activity implements AdapterFragmentCallbacks {
             @Override
             public void onClick(View v) {
                 setProductivityMode(true);
-            }
-        });
-        btnMonitorMinus.setOnClickListener(new OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                if (productivityMonitors > 1) {
-                    productivityMonitors--;
-                    renderMonitorCount();
-                }
-            }
-        });
-        btnMonitorPlus.setOnClickListener(new OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                if (productivityMonitors < 3) {
-                    productivityMonitors++;
-                    renderMonitorCount();
-                }
             }
         });
         btnFps30.setOnClickListener(new OnClickListener() {
@@ -259,38 +236,66 @@ public class PcView extends Activity implements AdapterFragmentCallbacks {
             }
         });
 
-        renderMonitorCount();
+        setProductivityMode(false);
         renderFpsToggle();
     }
 
-    private void setProductivityMode(boolean productivity) {
-        productivityPanel.setVisibility(productivity ? View.VISIBLE : View.GONE);
-
-        tabGaming.setBackgroundColor(getResources().getColor(
-                productivity ? android.R.color.transparent : R.color.ml_accent_gaming_dim));
-        tabGaming.setTextColor(getResources().getColor(
-                productivity ? R.color.ml_text_dim : R.color.ml_accent_gaming));
-
-        tabProductivity.setBackgroundColor(getResources().getColor(
-                productivity ? R.color.ml_accent_prod_dim : android.R.color.transparent));
-        tabProductivity.setTextColor(getResources().getColor(
-                productivity ? R.color.ml_accent_prod : R.color.ml_text_dim));
+    /** A filled, rounded pill for whichever tab/toggle option is selected. */
+    private android.graphics.drawable.Drawable pill(boolean selected) {
+        android.graphics.drawable.GradientDrawable d = new android.graphics.drawable.GradientDrawable();
+        d.setCornerRadius(12 * getResources().getDisplayMetrics().density);
+        d.setColor(getResources().getColor(selected ? R.color.ml_pill_active : android.R.color.transparent));
+        return d;
     }
 
-    private void renderMonitorCount() {
-        tvMonitorCount.setText(String.valueOf(productivityMonitors));
+    /**
+     * Gaming and Productivity are conceptually pages left-to-right, so
+     * Productivity's drawer always lives off the right edge: entering
+     * slides it in from the right (as if the user swiped left to reach
+     * it), leaving slides it back out to the right (swipe right = back to
+     * Gaming). The shared PC grid above never moves — only this drawer.
+     */
+    private static final int MODE_SWITCH_MS = 220;
+
+    private void setProductivityMode(boolean productivity) {
+        tabGaming.setBackground(pill(!productivity));
+        tabGaming.setTextColor(getResources().getColor(
+                productivity ? R.color.ml_text_dim : R.color.ml_pill_active_text));
+
+        tabProductivity.setBackground(pill(productivity));
+        tabProductivity.setTextColor(getResources().getColor(
+                productivity ? R.color.ml_pill_active_text : R.color.ml_text_dim));
+
+        boolean alreadyShown = productivityPanel.getVisibility() == View.VISIBLE;
+        if (alreadyShown == productivity) {
+            return;
+        }
+
+        final float offscreenRight = getResources().getDisplayMetrics().widthPixels;
+        productivityPanel.animate().cancel();
+        if (productivity) {
+            productivityPanel.setTranslationX(offscreenRight);
+            productivityPanel.setVisibility(View.VISIBLE);
+            productivityPanel.animate().translationX(0).setDuration(MODE_SWITCH_MS).start();
+        } else {
+            productivityPanel.animate().translationX(offscreenRight).setDuration(MODE_SWITCH_MS)
+                    .withEndAction(new Runnable() {
+                        @Override
+                        public void run() {
+                            productivityPanel.setVisibility(View.GONE);
+                        }
+                    }).start();
+        }
     }
 
     private void renderFpsToggle() {
-        btnFps30.setBackgroundColor(getResources().getColor(
-                productivity60fps ? android.R.color.transparent : R.color.ml_accent_prod_dim));
+        btnFps30.setBackground(pill(!productivity60fps));
         btnFps30.setTextColor(getResources().getColor(
-                productivity60fps ? R.color.ml_text_faint : R.color.ml_accent_prod));
+                productivity60fps ? R.color.ml_text_faint : R.color.ml_pill_active_text));
 
-        btnFps60.setBackgroundColor(getResources().getColor(
-                productivity60fps ? R.color.ml_accent_prod_dim : android.R.color.transparent));
+        btnFps60.setBackground(pill(productivity60fps));
         btnFps60.setTextColor(getResources().getColor(
-                productivity60fps ? R.color.ml_accent_prod : R.color.ml_text_faint));
+                productivity60fps ? R.color.ml_pill_active_text : R.color.ml_text_faint));
     }
 
     @Override
