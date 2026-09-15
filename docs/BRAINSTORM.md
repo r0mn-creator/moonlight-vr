@@ -176,6 +176,30 @@ work starts, whether it's already built per-surface or currently assumes a
 single screen in the scene (fixed position, single render target), which
 would need generalizing to N independent panels.
 
+## Input method for Productivity mode
+
+Clarified against a reference image the user shared (three floating flat
+monitors + a holographic virtual keyboard/trackpad, controller ray-pointed) —
+the floating screens matched the existing design; the virtual keyboard did
+not, so this was checked rather than assumed:
+
+- **Now**: real keyboard/mouse only. Either wired straight to the PC (this
+  app never sees it — it's just normal PC input, no different from any other
+  desktop use), or connected to the headset and forwarded to the PC over the
+  network. The second case is not new work: it's the same keyboard/mouse
+  passthrough input path Moonlight already uses for Gaming mode. Productivity
+  mode doesn't add an input pipeline, it just needs that existing path to
+  keep working during a Productivity session.
+- **Later (not yet started)**: a virtual, controller/hand-pointed keyboard
+  and trackpad, for when no physical keyboard is on hand. Explicit decision:
+  **reuse Horizon OS's own built-in system keyboard rather than building a
+  custom one** — Meta's OS already renders one automatically whenever a
+  standard Android text input field gains focus, already tuned for the
+  headset's own pointer/hand-tracking. The design implication: whatever
+  Productivity-mode UI eventually needs text entry should go through normal
+  Android focusable text fields so the system keyboard triggers naturally,
+  rather than intercepting input and drawing a custom on-screen keyboard.
+
 ## Naming
 
 Renaming both the client and (if ever needed) the host fork is fine and
