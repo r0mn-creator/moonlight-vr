@@ -423,6 +423,97 @@ fork to sit with rather than decide immediately. Revisit before doing any
 more work that assumes one path or the other (e.g. the client-side "open N
 concurrent connections" work only makes sense for the 3-instances path).
 
+## Virtual Sunshine — the actual plan (researched, not guessed)
+
+Read Apollo's real source (shallow-cloned to `/home/roman/Android/
+ApolloResearch`, github.com/ClassicOldSong/Apollo) to find out exactly what
+"real multi-monitor support" would require, rather than continuing to
+theorize. Findings:
+
+**The blocker is one global singleton, not an isolated flag.**
+`proc::proc` (`process.h`/`process.cpp`) is a single global object that
+simultaneously represents "the running app," "the selected display," AND
+implicitly "the encoder" — referenced by name across `process.cpp`,
+`video.cpp`, and `rtsp.cpp`:
+- `video.cpp:1061`: `static encoder_t *chosen_encoder` — one encoder for
+  the whole process.
+- `video.cpp:1187,1389`: display selection writes straight onto the
+  singleton (`proc::proc.display_name = display_names[display_p]`) — a
+  global value, not something parameterized per session/request.
+- `rtsp.cpp:401-483`: the launch handshake uses a **single-slot event**,
+  not a queue — a second launch request while one is pending is silently
+  dropped ("we currently only support a single pending RTSP session," per
+  the code's own comment).
+- `process.cpp`: `proc_t` has one `_app_id`; nothing suggests two `proc_t`
+  instances coexisting today. Launching app B while app A streams goes
+  through the same singleton that owns display selection — "one active
+  app" and "one active display" are the *same* bottleneck, not two
+  separate ones.
+- No TODO/FIXME scaffolding found anywhere in `src/*.cpp,*.h` for
+  multi-display — this is a clean, never-started gap, matching the
+  maintainer's own "total mess" assessment rather than a half-built
+  feature waiting to be finished.
+- The network layer itself (`rtsp_server_t::bind()`) has no such limit —
+  it accepts connections continuously. The bottleneck is entirely at the
+  process/session layer above it, not sockets.
+
+**Verdict: large, not medium.** Real single-instance multi-monitor support
+means turning `proc_t` and the capture/encode loop into genuinely
+per-session instances (or a small registry of them), plus replacing the
+single-slot RTSP launch event with a real queue/map keyed by session ID —
+a structural rewrite touching the three largest files in the codebase
+(video.cpp 3065 lines, stream.cpp 2226, process.cpp), in a large C++
+codebase we don't own, that its own maintainers already flagged as messy
+in this exact area. There's also a real hardware ceiling this doesn't even
+touch yet: concurrent hardware encoder sessions (NVENC etc.) are
+GPU/driver-limited, so even a perfect software rewrite still needs the
+host GPU to support 3 simultaneous hardware encode sessions.
+
+### The actual plan: two phases, ship the tractable one first
+
+**Phase 1 — Virtual Sunshine as orchestration, not a C++ patch.** Use the
+*existing*, working single-session path three times over (process
+isolation) instead of rearchitecting Apollo's core. Concretely, a setup/
+launcher tool that:
+- Detects the host's connected monitors and generates 3 Apollo config
+  files (`sunshine.conf`, `sunshine_2.conf`, `sunshine_3.conf`), each with
+  `output_name` pointed at one physical display and a distinct port.
+- Starts/stops all 3 instances together as one unit — the user runs
+  "Virtual Sunshine," not three separate services they have to remember.
+- **Unifies pairing**: since our own tool generates all 3 configs, it can
+  provision the same trusted-client certificate into all 3 instances'
+  paired-clients state after a single pairing handshake in Virtual
+  Moonlight, instead of the user pairing 3 times. Needs confirming
+  Sunshine's pairing state format is simple cert-trust (likely, given it's
+  file-based config) rather than something more coupled to a specific
+  instance.
+- Establishes a naming convention (e.g. "Desktop — Monitor 1/2/3") each
+  instance's "Desktop" app entry uses, so the client can find the right
+  stream on each port without per-PC manual configuration.
+- **No changes to Apollo's C++ source at all.** This is tooling/config
+  generation wrapped around existing, already-working multi-instance
+  capability — the only "modification" is packaging and automating a setup
+  a user could already technically do by hand today.
+
+Client-side (Virtual Moonlight) work this phase actually requires: opening
+3 concurrent NvHTTP/RTSP connections (one per port) instead of 1 — real
+work in the Java networking layer, since `NvHTTP`/`MoonBridge` currently
+assume one connection per stream — and mapping each of the 3 streams to
+the correct VR screen by the naming convention above.
+
+**Phase 2 — patch Apollo's capture/session core for true single-instance
+concurrency.** Only worth it if Phase 1's friction (3 ports, 3 processes,
+though not 3 manual pairings) turns out to be a real ongoing problem in
+practice. This is the large rewrite described above, in someone else's
+codebase, gated on GPU encoder session limits that exist regardless of how
+good the software rewrite is. Not started, not currently planned as a
+first step.
+
+**Recommendation, given the research: start with Phase 1.** It delivers
+the actual user-facing goal (3 real monitors in VR, one setup, one pair)
+without touching a large unfamiliar C++ codebase its own maintainers
+already called messy in this exact area.
+
 ## Native Quest 3 feel — haptics and spatial audio shipped
 
 Asked what "feels like a native Quest 3 app, built by a pro VR dev" actually
