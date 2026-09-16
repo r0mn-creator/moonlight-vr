@@ -1104,6 +1104,49 @@ Sunshine's GitHub Actions workflow) - this release was built and signed
 locally. Worth revisiting if betas become frequent enough that manual
 builds get tedious.
 
+## beta02, 2026-09-16: PMode controls — fixed a real regression, added screen pointer/click
+
+User asked to "start adding controls to pmode," minimum bar: exit the
+screens and get back to the main menu. Checking this surfaced a real bug:
+**the exit button (and spatial audio) had been silently broken since the
+Game.java connection-lifecycle rewrite (step 4) earlier this session.**
+`startProductivitySession()` creates its own `XrRenderer` directly, but the
+*old* single-connection design got `setInputListener(activity)` for free
+from inside `MediaCodecDecoderRenderer.getRenderSurface()`'s lazy creation
+- a path Productivity no longer goes through at all. Every
+`dispatchInput()` callback (exit, spatial audio, pointer, button, scroll)
+is gated on `inputListener != null`, so all of it was quietly inert.
+One-line fix: call `productivityXrRenderer.setInputListener(Game.this)`
+right after creating it.
+
+**Then built real Phase 2 input** on top of the fix: `xr_renderer.c`'s
+`updateProductivityInput()` now ray-hit-tests the 3 screen quads
+themselves (previously only the exit button), reusing the exact quad
+geometry `renderVideoFrame` already draws so the ray and the picture agree
+on where the edges are. 5 new `IN_PMODE_*` slots report which screen (or
+none, -1) + local u,v + a left/right/middle button mask. Deliberately
+*not* reusing the single-screen path's full hover-state machine (gaze,
+grab/resize, per-axis smoothing) — one ray, whichever of the 3 screens it
+lands on, one click. `XrRenderer.java` dispatches this through two new
+`InputListener` methods, with a release-on-ray-leaving-screen safety net
+so a button can't get stuck down. `Game.java` routes clicks/position to
+whichever screen's AIDL service is actually being pointed at, via a new
+`sendMousePosition()` method added to `IPModeScreenService` (absolute
+positioning - what a ray hit-test naturally produces, unlike the relative
+deltas `sendMouseMove` takes).
+
+**Not done**: scroll wheel and keyboard routing to the 3 screens (this
+pass was mouse pointer + click only).
+
+**Shipped as beta02** (since beta01, published minutes earlier, has the
+broken exit button - anyone testing it would get stuck with no way out):
+https://github.com/r0mn-creator/moonlight-vr/releases/tag/beta02. Verified
+the whole point of setting up dedicated release signing actually works:
+`adb install -r` over beta01 succeeded as a real in-place update (same
+key), launched clean on the connected Quest 3. Still can't verify the
+actual pointer/click *behavior* on-device - no live Virtual Sunshine host
+in this dev environment to stream from.
+
 ## Native Quest 3 feel — haptics and spatial audio shipped
 
 Asked what "feels like a native Quest 3 app, built by a pro VR dev" actually
