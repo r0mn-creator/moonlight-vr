@@ -990,11 +990,35 @@ code:**
   `NvConnectionListener` (itself an `Object` subclass) — collided with
   `Object.notify()`, a classic Java gotcha. Renamed to `notifyCallback()`.
 
-**Not yet wired up: nothing calls `IPModeScreenService.connect()` yet.**
-That's steps 3-4 (`XrRenderer.java`/`xr_renderer.c` creating N
-`SurfaceTexture`s, binding to each service, sampling N OES textures instead
-of column-cropping one) — still to come. Native `xr_renderer.c` is
-completely untouched so far, so this compile-verification doesn't cover it.
+**Step 3 shipped, 2026-09-16 (commit `c9c82afe`), verified on real hardware
+this time.** `xr_renderer.c` now has `productivityOesTexture[3]` (one per
+screen) instead of one shared decoded frame column-cropped into 3 quads.
+`renderVideoFrame()` branches early for `productivityMode`: same swapchain,
+same `imageRect` per-quad layout the composition-layer code already used
+(untouched), but each screen's OWN texture gets blitted into its own
+viewport column instead of one texture's columns being re-sampled. One real
+bug caught while writing this: the function starts a GPU timer query
+unconditionally near the top, and PMode's early return skips the matching
+end call — an unmatched `glBeginQuery` would have broken every later timing
+query. Fixed by gating the query start on `!productivityMode` too, since
+PMode doesn't need per-frame GPU timing yet anyway.
+
+`XrRenderer.java` creates the N `SurfaceTexture`/`Surface` pairs (only in
+productivity mode), each with its own pending-frame counter and listener,
+feeding `nativeUpdateProductivityTexture()` once per screen per frame. New
+`getProductivityInputSurface(index)` for `Game.java` to hand to the bound
+services — not called yet, since nothing binds the services or drives
+`connect()` yet. That's the rest of step 4.
+
+**This is the first change this session actually verified beyond a
+compiler** — with a real Quest 3 connected (`2G0YC5ZFCM01G3`):
+`./gradlew :app:externalNativeBuildRootDebug` (native code, all 4 ABIs),
+`:app:assembleRootDebug` (full APK), installed and launched on-device with
+no crash, native library loaded, reached `PcView` normally, and the 3
+`PModeScreenService` entries confirmed present in the actual packaged
+manifest. Doesn't exercise PMode streaming itself (nothing calls
+`connect()` yet) - that needs `Game.java`'s mode-branching connection
+lifecycle next, plus a live Virtual Sunshine host to actually test against.
 A real unknown alongside it: Quest 3's Snapdragon XR2 Gen2 concurrent
 hardware video decoder session limit hasn't been checked. 2-3 simultaneous
 `MediaCodec` decode sessions is very likely fine on this hardware, but
