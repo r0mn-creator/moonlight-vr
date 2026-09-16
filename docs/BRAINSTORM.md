@@ -385,6 +385,44 @@ whatever rotation it already had.
   pattern as the `productivityMode`/`productivityDepth` flags already
   threaded through the launch intent).
 
+## Native Quest 3 feel — haptics and spatial audio shipped
+
+Asked what "feels like a native Quest 3 app, built by a pro VR dev" actually
+means concretely. Prioritized list: haptics, fixed foveated rendering
+(offsets the exact GPU cost 3 screens just added — not yet done), spatial
+audio, a real first-launch flow (not yet done). Passthrough, hand tracking,
+and guardian handling were already covered or free from the OS.
+
+**Haptics**: a new `XR_ACTION_TYPE_VIBRATION_OUTPUT` action
+(`ctx->hapticAction`), bound on every controller profile — not gated behind
+the `full`/`simple` binding split like most inputs, since any profile with a
+trigger has a haptic motor. `fireHaptic(ctx, hand)` is a small reusable
+helper, wired to the exit button for now; Phase 2's other buttons get it for
+free by calling the same function.
+
+**Spatial audio**: there's only one audio stream for the whole desktop
+(mixed before it ever reaches the client), so this positions the *whole*
+mix at one point — the centre screen — rather than attempting per-window
+audio the stream doesn't support. `updateProductivitySpatialAudio` computes
+pan (head-relative azimuth to the centre screen) and gain (distance
+falloff, referenced to the default screen distance) each frame, riding
+along on the existing `nativeUpdateInput` channel (two new slots,
+`IN_AUDIO_PAN`/`IN_AUDIO_GAIN`) rather than adding a new JNI call.
+`AndroidAudioRenderer` applies it as a balance control directly on the PCM
+buffer before `AudioTrack.write()`.
+
+**Both are Productivity-only, deliberately built to cost Gaming mode
+nothing** — not just a negligible effect. Native always emits neutral
+`(pan=0, gain=1)` outside `productivityMode`; the Java-side balance math
+treats `(0, 1)` as an exact identity (skips its processing loop entirely
+rather than multiplying every sample by 1.0). This is the same
+frozen-Gaming discipline as everything else this session — worth
+double-checking any future audio/haptics work preserves it too.
+
+Shipped 2026-09-16. Compiles clean (Java + native); **not built into an APK
+or installed** — no device available to test against at the time, so this
+needs a real on-device pass before being called done.
+
 ## Naming
 
 Renaming both the client and (if ever needed) the host fork is fine and
