@@ -675,10 +675,27 @@ but end-to-end verification needs either this CI pipeline or the user's
 own Windows PC. Same shipped-compiled-but-unverified posture as the Quest
 haptics/audio work.
 
-Not yet done: any of the 10 steps above is still a plan, not code. Next
-real step once the baseline build is confirmed working is #1-#4 (new
-config + the new session struct + bypassing `proc::proc` for the new
-path), since #5 onward depend on that foundation existing first.
+**Baseline build confirmed working, 2026-09-16.** First CI attempt found a
+real bug in Apollo's own `master` (a stale `cfg.profile` reference in
+`video.cpp` that no longer matches `video::config_t` — not something we
+caused). Fixed by rebasing onto their latest tagged release, `v0.4.8`,
+instead of bleeding-edge master. Second attempt found a second real issue:
+the pinned Boost 1.89.0 release-asset SHA256 in `cmake/dependencies/
+Boost_Sunshine.cmake` no longer matched what GitHub actually serves at
+that URL — verified independently (downloaded and hashed it myself,
+separate from the CI runner) that upstream's asset genuinely changed
+content since v0.4.8 was tagged, not a network/security issue. Updated the
+pin to the real current hash. Third attempt succeeded:
+https://github.com/r0mn-creator/virtual-sunshine/releases/tag/build-5 —
+`VirtualSunshine-installer.exe` and `VirtualSunshine-portable.zip`, both
+unmodified Apollo (v0.4.8 + the two build fixes above), no Productivity
+capability yet. This is the confirmed-working foundation the actual patch
+(steps 1-10 above) now gets built on top of.
+
+Not yet done: any of the 10 patch steps above is still a plan, not code.
+Next real step is #1-#4 (new config + the new session struct + bypassing
+`proc::proc` for the new path), since #5 onward depend on that foundation
+existing first.
 
 ## Native Quest 3 feel — haptics and spatial audio shipped
 
