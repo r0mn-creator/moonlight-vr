@@ -849,6 +849,51 @@ drag-and-drop update mechanism above depends on that layout matching an
 existing Apollo install, not on what the top-level folder or registry
 entry is called.
 
+## The drag-and-drop update path had a real bug — confirmed on the user's actual PC, 2026-09-16
+
+The "packaging simplified" plan above claimed the portable ZIP could just
+be dropped into an existing Apollo install with nothing else needed. The
+user actually tried it (updating their real, working Apollo install) and
+Sunshine failed to start:
+
+```
+terminate called after throwing an instance of
+'boost::wrapexcept<boost::system::system_error>'
+  what():  use_certificate_chain_file: Access is denied [system:5]
+```
+
+with an earlier, related warning also in the log:
+`Failed to rotate log file: ... Access is denied [...\config/sunshine.log.backup]`.
+
+**Root cause**: the real NSIS installer runs `icacls "$INSTDIR" /reset`
+elevated as part of installation (`cmake/packaging/windows_nsis.cmake`) —
+that's what actually lets Sunshine read/write its own `config` folder
+(certs, logs, state) afterward, not something inherent to the folder
+structure. A plain ZIP extraction over an existing install skips this
+entirely, and when Explorer overwrites the existing certificate/log files,
+the new copies can end up without the permissions the original installer
+granted them. This is exactly what happened — confirmed live via the
+user's own terminal output and Event Viewer-adjacent debugging, not
+theoretical.
+
+**Immediate unblock** (talked the user through it directly): run, as
+Administrator, `icacls "<install>\config" /grant Users:(OI)(CI)M /T`. One
+real snag along the way — icacls is a `cmd.exe`-era tool, and PowerShell's
+parser eats the bare `(OI)(CI)` unless it's quoted as one string; had to
+tell the user to either quote it or switch to Command Prompt.
+
+**Permanent fix, shipped same day (`d06340c8`)**: `fix-permissions.bat`,
+installed at the portable ZIP's *root* (next to `sunshine.exe`, not buried
+in `scripts/`, so it's the first thing visible after extracting) — checks
+for admin elevation itself (`net session` trick), then runs the exact
+`icacls` fix. Documented in the README's install/update section and in the
+CI release-notes template, since silently expecting users to know this
+command defeats the entire point of the "just drag files in" pitch.
+**Lesson**: a plan that sounds simple ("just copy files") can still hide a
+step the real installer does silently — verify update paths against what
+the installer actually does line by line, not just what state the two
+folders end up looking like.
+
 ## Client can't actually use PMode yet — moonlight-common-c is single-connection by design
 
 Asked whether Virtual Moonlight needs updates to use the Virtual Sunshine
