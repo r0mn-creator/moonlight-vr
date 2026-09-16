@@ -206,6 +206,11 @@ public class PreferenceConfiguration {
     public int vrInferenceCadence;
     public int vrConvergence;
     public int vrDepthScale;
+    // Set per-launch from the Game intent (Game.EXTRA_PRODUCTIVITY_MODE/
+    // _DEPTH), not read from SharedPreferences here - this isn't a stored
+    // user preference, it's which PcView tab started this session.
+    public boolean productivityMode;
+    public boolean productivityDepth;
     public boolean enableLatencyToast;
     public boolean bindAllUsb;
     public boolean mouseEmulation;

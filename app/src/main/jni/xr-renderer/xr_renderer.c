@@ -226,6 +226,14 @@
 // the local detail on top of it. About a tenth of the frame.
 #define DEPTH_LOWPASS_RADIUS 11
 
+// Productivity mode, Phase 1: a fixed default arrangement for N flat
+// screens. No rotate/arrange controls yet (that is Phase 2) - these are
+// just sane constants so there is something to look at. See BRAINSTORM.md.
+#define PRODUCTIVITY_SCREEN_COUNT 3
+#define PRODUCTIVITY_DISTANCE_M 2.2f
+#define PRODUCTIVITY_SCREEN_WIDTH_M 1.35f
+#define PRODUCTIVITY_GAP_M 0.06f
+
 typedef struct { float x, y, z; } Vec3;
 
 // One euro filter: a low pass whose cutoff rises with speed, so a resting
@@ -486,6 +494,12 @@ typedef struct {
     XrVector3f headPos;
     XrQuaternionf screenOrientation;
     float beamWidth;
+
+    // Productivity mode: N flat screens instead of the single stereo one
+    // above. Phase 1 only - fixed default arrangement, no grab/rotate/
+    // arrange controls yet (that's all still ctx->screenPose/grab* below,
+    // untouched and unused while this is set). See BRAINSTORM.md.
+    int productivityMode;
 
     // Where the screen actually is. Seeded from the distance and width
     // preferences and then owned by the grab, so moving it does not fight the
@@ -2617,6 +2631,24 @@ static void updatePlacement(XrCtx* ctx, float distance, float quadWidth, float c
     ctx->sliderSeen = 1;
 }
 
+// Phase 1 fixed layout: N screens spaced evenly left-to-right on a shallow
+// arc, all facing back toward the origin. No curve/distance/height/spacing
+// controls yet - see BRAINSTORM.md Phase 2. The small-angle approximation
+// (arc length ~= chord length) is fine here since this is just a default,
+// not a value a slider needs to be precise about.
+static XrPosef productivityScreenPose(int index) {
+    float step = (PRODUCTIVITY_SCREEN_WIDTH_M + PRODUCTIVITY_GAP_M) / PRODUCTIVITY_DISTANCE_M;
+    float angle = (index - (PRODUCTIVITY_SCREEN_COUNT - 1) * 0.5f) * step;
+
+    XrPosef pose;
+    memset(&pose, 0, sizeof(pose));
+    pose.orientation.y = sinf(angle * 0.5f);
+    pose.orientation.w = cosf(angle * 0.5f);
+    pose.position.x = PRODUCTIVITY_DISTANCE_M * sinf(angle);
+    pose.position.z = -PRODUCTIVITY_DISTANCE_M * cosf(angle);
+    return pose;
+}
+
 // Handed back only when a grab ends, so preferences are written once per move
 // rather than every frame of it
 static void writeInputPose(XrCtx* ctx, float* out) {
@@ -2916,12 +2948,14 @@ JNIEXPORT jlong JNICALL
 Java_com_limelight_binding_video_XrRenderer_nativeInit(JNIEnv* env, jobject thiz,
                                                        jobject activity, jint width, jint height,
                                                        jint stereoMode, jboolean depthDebug,
-                                                       jint convergence, jint depthScale) {
+                                                       jint convergence, jint depthScale,
+                                                       jboolean productivityMode) {
     XrCtx* ctx = calloc(1, sizeof(XrCtx));
     ctx->videoWidth = width;
     ctx->videoHeight = height;
     ctx->stereoMode = stereoMode;
     ctx->depthDebug = depthDebug;
+    ctx->productivityMode = productivityMode;
     ctx->sessionState = XR_SESSION_STATE_UNKNOWN;
     // Depth arrives at about 20 Hz, so 0.6 settles in roughly two updates.
     // The range moves much more slowly on purpose, it should track the scene
@@ -4500,6 +4534,7 @@ Java_com_limelight_binding_video_XrRenderer_nativeEndFrame(JNIEnv* env, jobject 
     XrCompositionLayerQuad envButtonLayer;
     XrCompositionLayerQuad pickerLayer;
     XrCompositionLayerQuad outlineLayers[2];
+    XrCompositionLayerQuad prodQuadLayers[PRODUCTIVITY_SCREEN_COUNT];
     const XrCompositionLayerBaseHeader* layers[16];
     uint32_t layerCount = 0;
 
@@ -4537,6 +4572,36 @@ Java_com_limelight_binding_video_XrRenderer_nativeEndFrame(JNIEnv* env, jobject 
     }
 
     if (ctx->everRendered && ctx->shouldRender) {
+      if (ctx->productivityMode) {
+        // Phase 1: N flat mono screens, fixed default arrangement, no
+        // interaction yet (no beam/handles/picker/background - those are
+        // all still the single-screen path below, untouched). Each screen
+        // samples an equal-width column of the same decoded frame that the
+        // single-screen path would otherwise show whole - see
+        // renderVideoFrame, which already does a plain mono blit whenever
+        // stereoMode is off, forced for productivity sessions in Game.java.
+        float colWidth = (float)ctx->videoWidth / PRODUCTIVITY_SCREEN_COUNT;
+        float colHeight = (float)ctx->videoHeight;
+        float quadHeight = PRODUCTIVITY_SCREEN_WIDTH_M * (colHeight / colWidth);
+
+        for (int i = 0; i < PRODUCTIVITY_SCREEN_COUNT; i++) {
+            XrCompositionLayerQuad* quad = &prodQuadLayers[i];
+            memset(quad, 0, sizeof(*quad));
+            quad->type = XR_TYPE_COMPOSITION_LAYER_QUAD;
+            quad->eyeVisibility = XR_EYE_VISIBILITY_BOTH;
+            quad->subImage.swapchain = ctx->swapchain;
+            quad->subImage.imageRect.offset.x = (int32_t)(i * colWidth);
+            quad->subImage.imageRect.offset.y = 0;
+            quad->subImage.imageRect.extent.width = (int32_t)colWidth;
+            quad->subImage.imageRect.extent.height = (int32_t)colHeight;
+            quad->subImage.imageArrayIndex = 0;
+            quad->space = space;
+            quad->pose = productivityScreenPose(i);
+            quad->size.width = PRODUCTIVITY_SCREEN_WIDTH_M;
+            quad->size.height = quadHeight;
+            layers[layerCount++] = (const XrCompositionLayerBaseHeader*)quad;
+        }
+      } else {
         int viewCount = stereo ? 2 : 1;
         for (int eye = 0; eye < viewCount; eye++) {
             XrSwapchainSubImage subImage;
@@ -4866,6 +4931,7 @@ Java_com_limelight_binding_video_XrRenderer_nativeEndFrame(JNIEnv* env, jobject 
                 layers[layerCount++] = (const XrCompositionLayerBaseHeader*)&dotLayer;
             }
         }
+      }
     }
 
     endInfo.layerCount = layerCount;

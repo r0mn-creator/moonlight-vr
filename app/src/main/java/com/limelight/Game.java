@@ -237,6 +237,22 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
         // Read the stream preferences
         prefConfig = PreferenceConfiguration.readPreferences(this);
+        prefConfig.productivityMode = getIntent().getBooleanExtra(EXTRA_PRODUCTIVITY_MODE, false);
+        prefConfig.productivityDepth = getIntent().getBooleanExtra(EXTRA_PRODUCTIVITY_DEPTH, false);
+        if (prefConfig.productivityMode) {
+            // Phase 1: naive uniform 3-wide request, assuming 3 identical
+            // landscape monitors. Real per-monitor geometry (resolution,
+            // mixed orientation) isn't known yet - see BRAINSTORM.md's
+            // multi-screen scoping notes for why that can't come from the
+            // stream itself. Height is left alone.
+            prefConfig.width *= 3;
+            // Per-screen depth isn't built yet regardless of the toggle -
+            // force the depth/warp pipeline off at the native layer so
+            // renderVideoFrame does its existing plain mono blit, which is
+            // exactly what the 3-way quad split assumes. Revisit once
+            // per-screen depth actually exists.
+            prefConfig.vrDepthMode = 0;
+        }
         tombstonePrefs = Game.this.getSharedPreferences("DecoderTombstone", 0);
 
         // Enter landscape unless we're on a square screen
