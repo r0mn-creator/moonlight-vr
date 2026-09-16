@@ -72,6 +72,7 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
     private int initialWidth, initialHeight;
     private int videoFormat;
     private SurfaceHolder renderTarget;
+    private Surface directSurface;
     private GlPassthroughRenderer glPassthrough;
     private XrRenderer xrRenderer;
     private volatile boolean xrRendererStopped;
@@ -296,6 +297,14 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
 
     public void setRenderTarget(SurfaceHolder renderTarget) {
         this.renderTarget = renderTarget;
+    }
+
+    // Used by headless (non-XR, non-Activity) decode targets, such as a
+    // Productivity-mode screen running in its own background-service
+    // process: no SurfaceView/SurfaceHolder exists there, just the raw
+    // Surface handed over from the main process.
+    public void setRenderTarget(Surface directSurface) {
+        this.directSurface = directSurface;
     }
 
     public MediaCodecDecoderRenderer(Activity activity, PreferenceConfiguration prefs,
@@ -536,7 +545,7 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
     // recovery, which re-runs configure with the same surface.
     private Surface getRenderSurface() {
         if (prefs.enableVrMode && !xrRendererStopped
-                && !activity.isFinishing() && !activity.isDestroyed()) {
+                && activity != null && !activity.isFinishing() && !activity.isDestroyed()) {
             if (xrRenderer == null) {
                 XrRenderer renderer = new XrRenderer();
                 if (activity instanceof XrRenderer.InputListener) {
@@ -557,17 +566,18 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
         }
 
         if (!prefs.enableGlRenderPath) {
-            return renderTarget.getSurface();
+            return directSurface != null ? directSurface : renderTarget.getSurface();
         }
 
         if (glPassthrough == null) {
             GlPassthroughRenderer renderer = new GlPassthroughRenderer();
-            if (renderer.start(renderTarget.getSurface(), initialWidth, initialHeight)) {
+            Surface glPassthroughTarget = directSurface != null ? directSurface : renderTarget.getSurface();
+            if (renderer.start(glPassthroughTarget, initialWidth, initialHeight)) {
                 glPassthrough = renderer;
             }
             else {
                 LimeLog.warning("GL render path unavailable, falling back to direct rendering");
-                return renderTarget.getSurface();
+                return glPassthroughTarget;
             }
         }
 
@@ -1046,7 +1056,7 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
             return;
         }
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP && activity != null) {
             frameTimeNanos -= activity.getWindowManager().getDefaultDisplay().getAppVsyncOffsetNanos();
         }
 

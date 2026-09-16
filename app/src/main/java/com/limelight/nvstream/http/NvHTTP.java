@@ -12,6 +12,8 @@ import java.net.Inet4Address;
 import java.net.InetAddress;
 import java.net.Proxy;
 import java.net.Socket;
+import java.net.URLEncoder;
+import java.io.UnsupportedEncodingException;
 import java.security.KeyManagementException;
 import java.security.KeyStore;
 import java.security.KeyStoreException;
@@ -753,6 +755,17 @@ public class NvHTTP {
         return new String(hexChars);
     }
     
+    // Display names like "\\.\DISPLAY2" contain characters that must be
+    // percent-encoded to survive as an HTTP query parameter.
+    private static String urlEncode(String value) {
+        try {
+            return URLEncoder.encode(value, "UTF-8");
+        } catch (UnsupportedEncodingException e) {
+            // UTF-8 is always supported on Android
+            throw new RuntimeException(e);
+        }
+    }
+
     public boolean launchApp(ConnectionContext context, String verb, int appId, boolean enableHdr) throws IOException, XmlPullParserException {
         // Using an FPS value over 60 causes SOPS to default to 720p60,
         // so force it to 0 to ensure the correct resolution is set. We
@@ -788,6 +801,8 @@ public class NvHTTP {
             "&remoteControllersBitmap=" + context.streamConfig.getAttachedGamepadMask() +
             "&gcmap=" + context.streamConfig.getAttachedGamepadMask() +
             "&gcpersist="+(context.streamConfig.getPersistGamepadsAfterDisconnect() ? 1 : 0) +
+            (context.streamConfig.getPmodeDisplay() == null || context.streamConfig.getPmodeDisplay().isEmpty() ? "" :
+                "&pmodeDisplay=" + urlEncode(context.streamConfig.getPmodeDisplay())) +
             MoonBridge.getLaunchUrlQueryParameters());
         if ((verb.equals("launch") && !getXmlString(xmlStr, "gamesession", true).equals("0") ||
                 (verb.equals("resume") && !getXmlString(xmlStr, "resume", true).equals("0")))) {

@@ -28,6 +28,7 @@ public class StreamConfiguration {
     private int colorRange;
     private int colorSpace;
     private boolean persistGamepadsAfterDisconnect;
+    private String pmodeDisplay;
 
     public static class Builder {
         private StreamConfiguration config = new StreamConfiguration();
@@ -128,6 +129,14 @@ public class StreamConfiguration {
             return this;
         }
 
+        // Virtual Sunshine PMode: which real display this connection should
+        // stream. Empty/null for an ordinary Gaming connection - the host
+        // ignores an absent pmodeDisplay param and behaves exactly as today.
+        public StreamConfiguration.Builder setPmodeDisplay(String pmodeDisplay) {
+            config.pmodeDisplay = pmodeDisplay;
+            return this;
+        }
+
         public StreamConfiguration build() {
             return config;
         }
@@ -148,6 +157,7 @@ public class StreamConfiguration {
         this.audioConfiguration = MoonBridge.AUDIO_CONFIGURATION_STEREO;
         this.supportedVideoFormats = MoonBridge.VIDEO_FORMAT_H264;
         this.attachedGamepadMask = 0;
+        this.pmodeDisplay = null;
     }
     
     public int getWidth() {
@@ -164,6 +174,10 @@ public class StreamConfiguration {
 
     public int getLaunchRefreshRate() {
         return launchRefreshRate;
+    }
+
+    public String getPmodeDisplay() {
+        return pmodeDisplay;
     }
     
     public int getBitrate() {
