@@ -359,6 +359,16 @@ slot into the same bar later:
   already returns to PcView for any VR session via the existing
   `EXTRA_RETURN_TO_PC_VIEW` mechanism.
 
+**Invariant: floating screens always face the user, not a fixed world
+orientation.** Already true in Phase 1 by construction —
+`productivityScreenPose` toes each screen inward toward the origin (where
+OpenXR's local space is centered, i.e. roughly where the user is at session
+start), rather than placing every screen parallel to the center one. This
+has to hold through Phase 2 too: whatever the curve/distance/height/spacing
+sliders do to a screen's position, they need to re-aim its orientation at
+the user as part of the same update, not just translate it while keeping
+whatever rotation it already had.
+
 **Phasing, to avoid building all of this at once**:
 - **Phase 1** (next, not started): get 3 flat screens rendering at all, in a
   fixed default wall arrangement (sensible constant curve/distance/height/
