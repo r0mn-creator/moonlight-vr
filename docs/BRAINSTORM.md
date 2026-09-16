@@ -965,10 +965,40 @@ in process A" a well-trodden path, not a novel one.
    through the new N-service architecture. Confirm Gaming still launches/
    streams exactly as before once this lands.
 
-**Not yet started — this is a plan, not code**, and a real unknown
-alongside it: Quest 3's Snapdragon XR2 Gen2 concurrent hardware video
-decoder session limit hasn't been checked. 2-3 simultaneous `MediaCodec`
-decode sessions is very likely fine on this hardware, but unverified.
+**Steps 1-2 shipped, 2026-09-16 (commit `9e1c2b61`), real compile-verified
+code:**
+- `PModeScreenService1/2/3` (`android:process=":pmode_screenN"`) + a small
+  AIDL contract (`IPModeScreenService`/`IPModeScreenCallback`) — all real
+  logic lives in `PModeScreenServiceBase`, the 3 subclasses exist purely to
+  give each screen its own manifest component/process.
+- The Service reuses the *existing* `NvConnection`/`AndroidAudioRenderer`
+  wiring as-is (per the plan's own "reuse, don't rewrite" spirit).
+  `MediaCodecDecoderRenderer` needed one real change: it always tried to
+  own an `XrRenderer` (a full OpenXR session — impossible in a background
+  Service), so it gained a `setRenderTarget(Surface)` overload for decoding
+  straight into an externally-supplied `Surface` with no XR session
+  involved, plus null-safety on the two places it touched `activity`
+  directly. Verified via a real `./gradlew :app:compileRootDebugJavaWithJavac`
+  that Gaming's existing `SurfaceHolder` path still compiles unchanged.
+- `pmodeDisplay` now flows end to end: a new field on `StreamConfiguration`
+  → appended to `NvHTTP`'s `/launch` query string → matches the
+  `pmodeDisplay` param Virtual Sunshine already reads server-side
+  (`b664ad7c`). Empty/null is a no-op, so Gaming's launch request is
+  byte-identical to before.
+- One real bug caught by actually compiling instead of just reading the
+  source: named a helper method `notify()` inside an anonymous
+  `NvConnectionListener` (itself an `Object` subclass) — collided with
+  `Object.notify()`, a classic Java gotcha. Renamed to `notifyCallback()`.
+
+**Not yet wired up: nothing calls `IPModeScreenService.connect()` yet.**
+That's steps 3-4 (`XrRenderer.java`/`xr_renderer.c` creating N
+`SurfaceTexture`s, binding to each service, sampling N OES textures instead
+of column-cropping one) — still to come. Native `xr_renderer.c` is
+completely untouched so far, so this compile-verification doesn't cover it.
+A real unknown alongside it: Quest 3's Snapdragon XR2 Gen2 concurrent
+hardware video decoder session limit hasn't been checked. 2-3 simultaneous
+`MediaCodec` decode sessions is very likely fine on this hardware, but
+unverified.
 
 ## Native Quest 3 feel — haptics and spatial audio shipped
 
