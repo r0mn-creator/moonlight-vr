@@ -548,12 +548,107 @@ protocol code as-is. That's a materially smaller, more honest patch than
 generalizing the whole session model — "one more specific kind of
 session" rather than "rebuild session management to be generic."
 
-**Not yet sketched, next when picked back up**: what the new config-UI tab
-actually needs to expose (monitor selection? on/off toggle? nothing at
-all if it's fully automatic), and the concrete shape of the new parallel
-capture/session path — how it coexists with `proc::proc`'s existing
-display-selection without the two fighting over the same GPU output or
-encoder session slots.
+### Implementation steps (2026-09-16), for VS Productivity specifically
+
+Grounded in what the research actually found in Apollo's source
+(`process.h/.cpp`, `video.cpp`, `rtsp.cpp`, `confighttp.cpp`,
+`display_device.cpp`). One encouraging detail the research surfaced that
+makes this smaller than it first looked: `nvenc_encode_session_t`/
+`avcodec_encode_session_t` (video.cpp:315,392) are already **per-capture-
+loop objects, not singletons** — the singularity comes from there only
+ever being *one capture loop* today, not from the encoder session class
+itself being single-instance. A second capture loop can create a second
+encoder session using the exact same class, no encoder changes needed —
+matching "reuse the encoder as-is" directly.
+
+1. **New config surface.** Add `productivity_enabled` and a
+   `productivity_displays` list (output names, reusing whatever
+   `display_device.cpp` already enumerates) to `config.h`/`config.cpp` —
+   the same pattern as the existing single `output_name`, just a list
+   instead of one value. This is additive; existing config keys and
+   values are untouched.
+
+2. **New confighttp tab.** A Productivity panel in the existing config
+   web UI (`confighttp.cpp`) — likely just checkboxes over the detected
+   display list (reusing `display_device.cpp`'s enumeration) writing to
+   the new config keys from step 1, following whatever pattern the
+   existing settings forms already use to read/write config.
+
+3. **A new, separate session/state struct — not `proc::proc`.** A small
+   `productivity_session_t` (or similar) that owns its own list of
+   {display index, capture context, encoder session} — deliberately not
+   touching `proc::proc.display_name` or `chosen_encoder`'s selection
+   logic at all. This is the "new parallel path" instead of "generalize
+   the singleton."
+
+4. **Bypass `proc::proc` for capture display selection on this path.**
+   The new productivity capture loop(s) read display targets from the
+   step 1 config list directly and open their own `display_device`/DXGI
+   duplication instances — never touching the global `display_p`/
+   `display_name` the existing gaming path uses. The two paths can run
+   concurrently without fighting over the same variable because they
+   never share it.
+
+5. **One encoder session per productivity display, reusing the existing
+   class.** Each productivity capture loop instantiates its own
+   `nvenc_encode_session_t` (or whichever backend is active), exactly the
+   class the existing single-display path already uses — no encoder
+   code changes. Real, unavoidable ceiling to test for regardless of any
+   of this: concurrent hardware encoder session limits on the host GPU/
+   driver. Needs a graceful failure path (clear error, not a crash) if a
+   given GPU can't open N simultaneous hardware sessions.
+
+6. **Expose it through the existing app-launch mechanism, not a new
+   protocol.** Add a reserved app entry (e.g. "Desktop — Productivity")
+   to the NvHTTP `/applist` response, shown only when
+   `productivity_enabled` is set. When a client launches *that specific*
+   app, `nvhttp.cpp`'s launch handler routes to the new productivity path
+   from step 3 instead of the normal `proc::proc` single-app launch.
+   Virtual Moonlight already launches by a "Desktop" naming convention
+   today (`AppView.resolveLaunchApp`) — this needs only a small update to
+   look for the productivity-specific name when in Productivity mode, no
+   new client-side protocol work.
+
+7. **Allow N concurrent sessions for productivity launches specifically,
+   without touching the existing single-slot gaming behavior.**
+   `rtsp.cpp`'s `_session_slots` is already a `std::set<shared_ptr<
+   session_t>>` — the collection type already supports multiple
+   concurrent sessions in principle. Add a separate, small slot-tracking
+   path for productivity-tagged launches (distinct from the existing
+   single-slot `launch_event` gaming path) so up to 3 concurrent
+   productivity sessions can be pending/active at once, while the
+   existing gaming single-session behavior is completely unmodified.
+   Client-side, this means Virtual Moonlight opens 3 separate launch
+   requests (one per screen) against the same app entry — 3 ordinary
+   Moonlight sessions running concurrently, not one session carrying 3
+   video channels. No RTSP/video-channel protocol changes needed, just
+   permission for more than one to exist at once for this specific case.
+
+8. **Input stays exactly as-is.** Per-session input/control handling
+   (`input.cpp`) is scoped to `session_t` already for the single-session
+   case today; extending to N concurrent productivity sessions should
+   carry this along for free since it was never tied to the `proc::proc`
+   singleton the way display/encoder selection was — worth confirming
+   this assumption once real code work starts, not yet verified.
+
+9. **Regression check, not just a new-feature check.** Since this is a
+   patch to an install the user already relies on for gaming, the actual
+   acceptance test is two-sided: existing gaming apps still launch and
+   stream exactly as before (the untouched `proc::proc` path), *and* the
+   new Productivity entry correctly drives 1, then 2, then 3 concurrent
+   monitor streams without disturbing it.
+
+10. **Packaging, once the above works**: VS Productivity ships as an
+    in-place update to an existing Apollo/Sunshine install (replace the
+    binary, preserve config/certs/pairings/app list — steps 1-2 are
+    additive config keys, so an existing config file loads fine with them
+    simply absent/defaulted). VS Full bundles the same patch into a
+    complete fresh-install build. Same underlying code either way.
+
+Not yet done: any of the above is still a plan, not code. Next real step
+when picked up is likely #1-#4 (new config + the new session struct +
+bypassing `proc::proc` for the new path), since #5 onward depend on that
+foundation existing first.
 
 ## Native Quest 3 feel — haptics and spatial audio shipped
 
