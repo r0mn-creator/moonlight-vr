@@ -2758,6 +2758,21 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     }
 
     @Override
+    public void onVrExitRequested() {
+        // Called from the render thread. Same path the keyboard "quit"
+        // shortcut already uses - finish() triggers the normal disconnect
+        // teardown, and Productivity always launches with
+        // EXTRA_RETURN_TO_PC_VIEW set (it's a VR session), so this lands
+        // back on the PC list.
+        runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                finish();
+            }
+        });
+    }
+
+    @Override
     public void onPerfUpdate(final String text) {
         // In VR the activity window is not displayed, so the stats go to the
         // renderer, which draws them as a layer inside the session

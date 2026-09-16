@@ -116,6 +116,8 @@ public class XrRenderer implements SurfaceTexture.OnFrameAvailableListener {
     private static final int IN_POSE_DIRTY = 6;
     private static final int IN_POSE = 8;
     private static final int IN_PICKER_PICK = 17;
+    // Productivity mode's top menu bar exit button, pressed this frame
+    private static final int IN_EXIT_PRESSED = 18;
     private static final int IN_SLOTS = 20;
     private static final int POSE_VALUES = 9;
     private final float[] inputState = new float[IN_SLOTS];
@@ -127,6 +129,10 @@ public class XrRenderer implements SurfaceTexture.OnFrameAvailableListener {
     // picked up whenever it is ready, so a slow decode cannot delay the first
     // frame and hang the shell on its loading screen.
     private final AtomicReference<ByteBuffer> pendingBackground = new AtomicReference<>();
+    // Productivity mode's top menu bar. Phase 1 has just the exit button;
+    // built the same way as the env button below so more modules (curve,
+    // distance, height, spacing) can follow the same pattern later.
+    private final AtomicReference<ByteBuffer> pendingProductivityMenu = new AtomicReference<>();
     private volatile int backgroundWidth;
     private volatile int backgroundHeight;
 
@@ -165,6 +171,9 @@ public class XrRenderer implements SurfaceTexture.OnFrameAvailableListener {
         void onVrPointerMove(float u, float v);
         void onVrButton(int button, boolean down);
         void onVrScroll(int clicks);
+        // Productivity mode's top menu bar exit button. There's no Android
+        // back gesture inside an immersive session, so this is the way out.
+        void onVrExitRequested();
     }
 
     public void setInputListener(InputListener listener) {
@@ -218,6 +227,10 @@ public class XrRenderer implements SurfaceTexture.OnFrameAvailableListener {
                 prefsContext = activity.getApplicationContext();
                 restoreScreenPose();
                 startEnvironment(prefs);
+
+                if (prefs.productivityMode) {
+                    pendingProductivityMenu.set(toBuffer(buildExitButton()));
+                }
 
                 File captureDir = activity.getExternalFilesDir(null);
                 if (captureDir != null) {
@@ -475,6 +488,13 @@ public class XrRenderer implements SurfaceTexture.OnFrameAvailableListener {
                 nativeUploadPicker(nativeCtx, grid, button);
             }
 
+            ByteBuffer exitIcon = pendingProductivityMenu.getAndSet(null);
+            if (exitIcon != null) {
+                // Reuses the env-button upload path (same texture, same size,
+                // mutually exclusive with Gaming's own use of it)
+                nativeUploadPicker(nativeCtx, null, exitIcon);
+            }
+
             ByteBuffer background = pendingBackground.getAndSet(null);
             if (background != null) {
                 nativeUploadBackground(nativeCtx, background, backgroundWidth, backgroundHeight);
@@ -727,6 +747,44 @@ public class XrRenderer implements SurfaceTexture.OnFrameAvailableListener {
         return button;
     }
 
+    // Standard exit/log-out glyph: a door frame open on one side with an
+    // arrow passing through it, pointing out.
+    private Bitmap buildExitButton() {
+        Bitmap button = Bitmap.createBitmap(ENV_BUTTON_TEX, ENV_BUTTON_TEX,
+                                            Bitmap.Config.ARGB_8888);
+        Canvas canvas = new Canvas(button);
+        Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        canvas.drawColor(0, PorterDuff.Mode.CLEAR);
+
+        paint.setColor(0xEEFFFFFF);
+        paint.setStyle(Paint.Style.STROKE);
+        paint.setStrokeWidth(7.0f);
+        paint.setStrokeCap(Paint.Cap.ROUND);
+        paint.setStrokeJoin(Paint.Join.ROUND);
+
+        // Door frame, left side and top/bottom only - open on the right,
+        // which is where the arrow exits
+        Path frame = new Path();
+        frame.moveTo(78.0f, 20.0f);
+        frame.lineTo(34.0f, 20.0f);
+        frame.quadTo(20.0f, 20.0f, 20.0f, 34.0f);
+        frame.lineTo(20.0f, 94.0f);
+        frame.quadTo(20.0f, 108.0f, 34.0f, 108.0f);
+        frame.lineTo(78.0f, 108.0f);
+        canvas.drawPath(frame, paint);
+
+        // Arrow shaft through the opening, pointing out
+        canvas.drawLine(46.0f, 64.0f, 100.0f, 64.0f, paint);
+
+        Path head = new Path();
+        head.moveTo(84.0f, 48.0f);
+        head.lineTo(104.0f, 64.0f);
+        head.lineTo(84.0f, 80.0f);
+        canvas.drawPath(head, paint);
+
+        return button;
+    }
+
     private static ByteBuffer toBuffer(Bitmap bitmap) {
         ByteBuffer pixels = ByteBuffer.allocateDirect(
                 bitmap.getWidth() * bitmap.getHeight() * 4);
@@ -820,6 +878,10 @@ public class XrRenderer implements SurfaceTexture.OnFrameAvailableListener {
         int pick = (int)inputState[IN_PICKER_PICK];
         if (pick >= 0) {
             chooseEnvironment(pick);
+        }
+
+        if (inputState[IN_EXIT_PRESSED] != 0.0f && inputListener != null) {
+            inputListener.onVrExitRequested();
         }
     }
 

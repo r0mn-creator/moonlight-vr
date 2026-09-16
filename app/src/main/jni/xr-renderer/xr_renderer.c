@@ -101,6 +101,8 @@
 #define IN_POSE     8
 // The cell just chosen in the environment grid, or -1
 #define IN_PICKER_PICK 17
+// Productivity mode's top menu bar exit button, pressed this frame
+#define IN_EXIT_PRESSED 18
 #define IN_SLOTS    20
 
 // Grab thresholds for the grip, and the range a resize is allowed to reach
@@ -233,6 +235,16 @@
 #define PRODUCTIVITY_DISTANCE_M 2.2f
 #define PRODUCTIVITY_SCREEN_WIDTH_M 1.35f
 #define PRODUCTIVITY_GAP_M 0.06f
+
+// Top menu bar, centred above the middle screen. Modular by design: each
+// module (exit now, curve/distance/height/spacing later) is one slot in a
+// row, laid out by productivityMenuItemPose(index, count) below. Only the
+// count and what each slot draws/does needs to change to add one.
+#define PRODUCTIVITY_BAR_Y_OFFSET_M 0.50f
+#define PRODUCTIVITY_MENU_ITEM_SIZE_M 0.10f
+#define PRODUCTIVITY_MENU_ITEM_GAP_M 0.03f
+#define PRODUCTIVITY_MENU_ITEM_COUNT 1
+#define PRODUCTIVITY_MENU_EXIT_INDEX 0
 
 typedef struct { float x, y, z; } Vec3;
 
@@ -2649,6 +2661,32 @@ static XrPosef productivityScreenPose(int index) {
     return pose;
 }
 
+// Anchor for the whole top menu bar: straight above the centre screen,
+// facing the same way it does.
+static XrPosef productivityMenuBarPose(void) {
+    XrPosef pose = productivityScreenPose((PRODUCTIVITY_SCREEN_COUNT - 1) / 2);
+    Vec3 local = { 0.0f, PRODUCTIVITY_BAR_Y_OFFSET_M, 0.02f };
+    Vec3 up = quatRotate(pose.orientation, local);
+    pose.position.x += up.x;
+    pose.position.y += up.y;
+    pose.position.z += up.z;
+    return pose;
+}
+
+// One slot along the bar. Modules are laid out left to right in index order;
+// adding one is just raising PRODUCTIVITY_MENU_ITEM_COUNT and giving the new
+// index a place to draw/hit-test, same as PRODUCTIVITY_MENU_EXIT_INDEX below.
+static XrPosef productivityMenuItemPose(int index, int count) {
+    XrPosef pose = productivityMenuBarPose();
+    float step = PRODUCTIVITY_MENU_ITEM_SIZE_M + PRODUCTIVITY_MENU_ITEM_GAP_M;
+    float x = (index - (count - 1) * 0.5f) * step;
+    Vec3 offset = quatRotate(pose.orientation, (Vec3){ x, 0.0f, 0.0f });
+    pose.position.x += offset.x;
+    pose.position.y += offset.y;
+    pose.position.z += offset.z;
+    return pose;
+}
+
 // Handed back only when a grab ends, so preferences are written once per move
 // rather than every frame of it
 static void writeInputPose(XrCtx* ctx, float* out) {
@@ -3355,6 +3393,56 @@ Java_com_limelight_binding_video_XrRenderer_nativeWaitBeginFrame(JNIEnv* env, jo
     return FRAME_RENDER;
 }
 
+// Phase 1's entire productivity input path: is a controller pointing at the
+// exit button, and was the trigger just pressed. Deliberately independent of
+// the single-screen hit-testing below (screenProject is reused, but nothing
+// about hoverKind/grabMode/the picker is touched) - one button, one job.
+static void updateProductivityInput(XrCtx* ctx, jboolean pointerEnabled, float* out) {
+    if (!ctx->inputReady || !pointerEnabled || ctx->sessionState != XR_SESSION_STATE_FOCUSED) {
+        return;
+    }
+
+    XrActiveActionSet active;
+    active.actionSet = ctx->actionSet;
+    active.subactionPath = XR_NULL_PATH;
+    XrActionsSyncInfo sync = { XR_TYPE_ACTIONS_SYNC_INFO };
+    sync.countActiveActionSets = 1;
+    sync.activeActionSets = &active;
+    if (XR_FAILED(xrSyncActions(ctx->session, &sync))) {
+        return;
+    }
+
+    XrPosef buttonPose = productivityMenuItemPose(PRODUCTIVITY_MENU_EXIT_INDEX,
+                                                  PRODUCTIVITY_MENU_ITEM_COUNT);
+
+    for (int h = 0; h < HAND_COUNT; h++) {
+        int wasDown = ctx->triggerDown[h];
+        float value = actionFloat(ctx, ctx->triggerAction, h);
+        ctx->triggerDown[h] = value > (wasDown ? PRESS_OFF : PRESS_ON);
+        ctx->triggerEdge[h] = ctx->triggerDown[h] && !wasDown;
+
+        if (ctx->aimSpaces[h] == XR_NULL_HANDLE) {
+            continue;
+        }
+        XrSpaceLocation loc = { XR_TYPE_SPACE_LOCATION };
+        const XrSpaceLocationFlags needed = XR_SPACE_LOCATION_POSITION_VALID_BIT
+                | XR_SPACE_LOCATION_ORIENTATION_VALID_BIT;
+        if (!(XR_SUCCEEDED(xrLocateSpace(ctx->aimSpaces[h], ctx->localSpace,
+                                         ctx->predictedDisplayTime, &loc))
+                && (loc.locationFlags & needed) == needed)) {
+            continue;
+        }
+
+        float u, v;
+        if (screenProject(loc.pose, buttonPose, PRODUCTIVITY_MENU_ITEM_SIZE_M,
+                          PRODUCTIVITY_MENU_ITEM_SIZE_M, 0.0f, 0, &u, &v)
+                && u >= 0.0f && u <= 1.0f && v >= 0.0f && v <= 1.0f
+                && ctx->triggerEdge[h]) {
+            out[IN_EXIT_PRESSED] = 1.0f;
+        }
+    }
+}
+
 // Reads the controllers and works out where they are pointing on the screen.
 // Java turns the result into host mouse events, so nothing here knows about
 // the connection.
@@ -3375,6 +3463,12 @@ Java_com_limelight_binding_video_XrRenderer_nativeUpdateInput(JNIEnv* env, jobje
     // Zero is a real cell, so "nothing picked" has to be said explicitly. Every
     // early return below would otherwise read as a press on the first one.
     out[IN_PICKER_PICK] = -1.0f;
+
+    if (ctx != NULL && ctx->productivityMode) {
+        updateProductivityInput(ctx, pointerEnabled, out);
+        (*env)->SetFloatArrayRegion(env, outArr, 0, IN_SLOTS, out);
+        return;
+    }
 
     // Anything held has to come back up when pointing stops, or the host is
     // left with a stuck button
@@ -4535,6 +4629,7 @@ Java_com_limelight_binding_video_XrRenderer_nativeEndFrame(JNIEnv* env, jobject 
     XrCompositionLayerQuad pickerLayer;
     XrCompositionLayerQuad outlineLayers[2];
     XrCompositionLayerQuad prodQuadLayers[PRODUCTIVITY_SCREEN_COUNT];
+    XrCompositionLayerQuad prodMenuLayers[PRODUCTIVITY_MENU_ITEM_COUNT];
     const XrCompositionLayerBaseHeader* layers[16];
     uint32_t layerCount = 0;
 
@@ -4600,6 +4695,30 @@ Java_com_limelight_binding_video_XrRenderer_nativeEndFrame(JNIEnv* env, jobject 
             quad->size.width = PRODUCTIVITY_SCREEN_WIDTH_M;
             quad->size.height = quadHeight;
             layers[layerCount++] = (const XrCompositionLayerBaseHeader*)quad;
+        }
+
+        // Top menu bar. Reuses the env-button swapchain/art slot (Gaming's
+        // own use of it never runs in this branch) - see
+        // nativeUploadPicker's button path. Only the exit module exists so
+        // far; more slots are PRODUCTIVITY_MENU_ITEM_COUNT away.
+        if (ctx->envButtonReady) {
+            XrCompositionLayerQuad* menu = &prodMenuLayers[PRODUCTIVITY_MENU_EXIT_INDEX];
+            memset(menu, 0, sizeof(*menu));
+            menu->type = XR_TYPE_COMPOSITION_LAYER_QUAD;
+            menu->layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
+            menu->eyeVisibility = XR_EYE_VISIBILITY_BOTH;
+            menu->subImage.swapchain = ctx->envButtonSwapchain;
+            menu->subImage.imageRect.offset.x = 0;
+            menu->subImage.imageRect.offset.y = 0;
+            menu->subImage.imageRect.extent.width = OUTLINE_TEX;
+            menu->subImage.imageRect.extent.height = OUTLINE_TEX;
+            menu->subImage.imageArrayIndex = 0;
+            menu->space = space;
+            menu->pose = productivityMenuItemPose(PRODUCTIVITY_MENU_EXIT_INDEX,
+                                                  PRODUCTIVITY_MENU_ITEM_COUNT);
+            menu->size.width = PRODUCTIVITY_MENU_ITEM_SIZE_M;
+            menu->size.height = PRODUCTIVITY_MENU_ITEM_SIZE_M;
+            layers[layerCount++] = (const XrCompositionLayerBaseHeader*)menu;
         }
       } else {
         int viewCount = stereo ? 2 : 1;
