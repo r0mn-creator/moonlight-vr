@@ -11,6 +11,7 @@ import com.limelight.binding.PlatformBinding;
 import com.limelight.binding.audio.AndroidAudioRenderer;
 import com.limelight.binding.video.CrashListener;
 import com.limelight.binding.video.MediaCodecDecoderRenderer;
+import com.limelight.binding.video.MediaCodecHelper;
 import com.limelight.nvstream.NvConnection;
 import com.limelight.nvstream.NvConnectionListener;
 import com.limelight.nvstream.StreamConfiguration;
@@ -140,6 +141,15 @@ public abstract class PModeScreenServiceBase extends Service {
             notifyTerminated(-1);
             return;
         }
+
+        // Each pmode_screenN process has its own static state - Game.java's
+        // main process calls this in onCreate(), but that doesn't help here.
+        // Without it, MediaCodecDecoderRenderer's constructor throws
+        // IllegalStateException immediately, and since this is all inside a
+        // oneway AIDL call, the exception just gets logged and swallowed by
+        // Binder rather than crashing anything visibly - confirmed on real
+        // hardware as the actual reason no video ever showed up.
+        MediaCodecHelper.initialize(this, "headless");
 
         // A headless decode target: no XR session, no SurfaceView, no GL
         // passthrough - just MediaCodec decoding straight into the Surface
