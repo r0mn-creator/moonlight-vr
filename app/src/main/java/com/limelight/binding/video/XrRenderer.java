@@ -118,7 +118,10 @@ public class XrRenderer implements SurfaceTexture.OnFrameAvailableListener {
     private static final int IN_PICKER_PICK = 17;
     // Productivity mode's top menu bar exit button, pressed this frame
     private static final int IN_EXIT_PRESSED = 18;
-    private static final int IN_SLOTS = 20;
+    // Spatial audio: -1..1 left/right balance and 0..1 distance gain
+    private static final int IN_AUDIO_PAN = 19;
+    private static final int IN_AUDIO_GAIN = 20;
+    private static final int IN_SLOTS = 21;
     private static final int POSE_VALUES = 9;
     private final float[] inputState = new float[IN_SLOTS];
     private int heldButtons;
@@ -174,6 +177,9 @@ public class XrRenderer implements SurfaceTexture.OnFrameAvailableListener {
         // Productivity mode's top menu bar exit button. There's no Android
         // back gesture inside an immersive session, so this is the way out.
         void onVrExitRequested();
+        // Desktop audio balance/gain relative to the user's head and the
+        // centre screen. Always (0, 1) outside Productivity mode.
+        void onVrSpatialAudio(float pan, float gain);
     }
 
     public void setInputListener(InputListener listener) {
@@ -882,6 +888,10 @@ public class XrRenderer implements SurfaceTexture.OnFrameAvailableListener {
 
         if (inputState[IN_EXIT_PRESSED] != 0.0f && inputListener != null) {
             inputListener.onVrExitRequested();
+        }
+
+        if (inputListener != null) {
+            inputListener.onVrSpatialAudio(inputState[IN_AUDIO_PAN], inputState[IN_AUDIO_GAIN]);
         }
     }
 

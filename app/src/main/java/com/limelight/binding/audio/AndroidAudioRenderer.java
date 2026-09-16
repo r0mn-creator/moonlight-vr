@@ -19,6 +19,18 @@ public class AndroidAudioRenderer implements AudioRenderer {
     private final boolean enableAudioFx;
 
     private AudioTrack track;
+    private int channelCount = 2;
+
+    // Set from Productivity mode's per-frame head/screen tracking; (0, 1) is
+    // an exact no-op, which is what Gaming mode always sends. See
+    // playDecodedAudio for why that matters.
+    private volatile float spatialPan = 0f;
+    private volatile float spatialGain = 1f;
+
+    public void setSpatialAudio(float pan, float gain) {
+        spatialPan = pan;
+        spatialGain = gain;
+    }
 
     public AndroidAudioRenderer(Context context, boolean enableAudioFx) {
         this.context = context;
@@ -68,6 +80,8 @@ public class AndroidAudioRenderer implements AudioRenderer {
     public int setup(MoonBridge.AudioConfiguration audioConfiguration, int sampleRate, int samplesPerFrame) {
         int channelConfig;
         int bytesPerFrame;
+
+        channelCount = audioConfiguration.channelCount;
 
         switch (audioConfiguration.channelCount)
         {
@@ -185,8 +199,33 @@ public class AndroidAudioRenderer implements AudioRenderer {
         return 0;
     }
 
+    // Simple balance control, not true panning: the "toward" channel stays at
+    // gain 1 and only the "away" channel is pulled down, so (pan=0, gain=1)
+    // is an exact identity transform. That's load-bearing - Gaming mode
+    // always sends (0, 1), and this must cost it nothing, not even a few dB.
+    private void applySpatialAudio(short[] audioData) {
+        if (channelCount != 2) {
+            return;
+        }
+        float pan = Math.max(-1f, Math.min(1f, spatialPan));
+        float gain = Math.max(0f, Math.min(1f, spatialGain));
+        float leftGain = (pan <= 0f ? 1f : 1f - pan) * gain;
+        float rightGain = (pan >= 0f ? 1f : 1f + pan) * gain;
+        if (leftGain == 1f && rightGain == 1f) {
+            return;
+        }
+        for (int i = 0; i + 1 < audioData.length; i += 2) {
+            audioData[i] = (short) Math.max(Short.MIN_VALUE,
+                    Math.min(Short.MAX_VALUE, Math.round(audioData[i] * leftGain)));
+            audioData[i + 1] = (short) Math.max(Short.MIN_VALUE,
+                    Math.min(Short.MAX_VALUE, Math.round(audioData[i + 1] * rightGain)));
+        }
+    }
+
     @Override
     public void playDecodedAudio(short[] audioData) {
+        applySpatialAudio(audioData);
+
         // Only queue up to 40 ms of pending audio data in addition to what AudioTrack is buffering for us.
         if (MoonBridge.getPendingAudioDuration() < 40) {
             // This will block until the write is completed. That can cause a backlog

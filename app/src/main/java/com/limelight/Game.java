@@ -150,6 +150,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     private TextView performanceOverlayView;
 
     private MediaCodecDecoderRenderer decoderRenderer;
+    private AndroidAudioRenderer audioRenderer;
     private boolean reportedCrash;
 
     // Set when the launcher tore its own task down to get the 2d panels out of
@@ -2559,8 +2560,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             UiHelper.notifyStreamConnecting(Game.this);
 
             decoderRenderer.setRenderTarget(holder);
-            conn.start(new AndroidAudioRenderer(Game.this, prefConfig.enableAudioFx),
-                    decoderRenderer, Game.this);
+            audioRenderer = new AndroidAudioRenderer(Game.this, prefConfig.enableAudioFx);
+            conn.start(audioRenderer, decoderRenderer, Game.this);
         }
     }
 
@@ -2755,6 +2756,13 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             return;
         }
         conn.sendMouseHighResScroll((short)(clicks * 120));
+    }
+
+    @Override
+    public void onVrSpatialAudio(float pan, float gain) {
+        if (audioRenderer != null) {
+            audioRenderer.setSpatialAudio(pan, gain);
+        }
     }
 
     @Override

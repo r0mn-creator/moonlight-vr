@@ -103,7 +103,12 @@
 #define IN_PICKER_PICK 17
 // Productivity mode's top menu bar exit button, pressed this frame
 #define IN_EXIT_PRESSED 18
-#define IN_SLOTS    20
+// Spatial audio: -1..1 left/right balance and 0..1 distance gain, both
+// relative to the user's head and the centre screen. Neutral (0, 1) outside
+// Productivity mode, so Gaming's audio is never touched.
+#define IN_AUDIO_PAN 19
+#define IN_AUDIO_GAIN 20
+#define IN_SLOTS    21
 
 // Grab thresholds for the grip, and the range a resize is allowed to reach
 #define SCREEN_MIN_WIDTH 0.8f
@@ -451,6 +456,7 @@ typedef struct {
     XrAction scrollAction;
     XrAction grabAction;
     XrAction toggleAction;
+    XrAction hapticAction;
     XrSpace aimSpaces[SRC_COUNT];
     XrPath handPaths[HAND_COUNT];
     int inputReady;
@@ -1781,6 +1787,12 @@ static void suggestBindings(XrCtx* ctx, const char* profile, int full) {
         b[n].action = ctx->triggerAction;
         b[n++].binding = toPath(ctx, path);
 
+        // Every profile with a trigger also has a haptic motor, so this isn't
+        // gated behind full/simple like the rest below
+        snprintf(path, sizeof(path), "%s/output/haptic", hands[h]);
+        b[n].action = ctx->hapticAction;
+        b[n++].binding = toPath(ctx, path);
+
         if (!full || simple) {
             continue;
         }
@@ -1912,6 +1924,7 @@ static int initXrInput(XrCtx* ctx) {
     ctx->scrollAction = makeAction(ctx, XR_ACTION_TYPE_VECTOR2F_INPUT, "scroll", "Scroll");
     ctx->grabAction = makeAction(ctx, XR_ACTION_TYPE_FLOAT_INPUT, "grab", "Move the screen");
     ctx->toggleAction = makeAction(ctx, XR_ACTION_TYPE_BOOLEAN_INPUT, "pointertoggle", "Pointer on or off");
+    ctx->hapticAction = makeAction(ctx, XR_ACTION_TYPE_VIBRATION_OUTPUT, "haptic", "Haptic feedback");
 
     if (ctx->aimAction == XR_NULL_HANDLE || ctx->triggerAction == XR_NULL_HANDLE) {
         return 0;
@@ -3393,6 +3406,67 @@ Java_com_limelight_binding_video_XrRenderer_nativeWaitBeginFrame(JNIEnv* env, jo
     return FRAME_RENDER;
 }
 
+// A short, light click rather than a buzz - this fires on every button press,
+// so it needs to read as a tap, not an event you have to wait out.
+static void fireHaptic(XrCtx* ctx, int hand) {
+    if (ctx->hapticAction == XR_NULL_HANDLE) {
+        return;
+    }
+    XrHapticVibration vibration = { XR_TYPE_HAPTIC_VIBRATION };
+    vibration.amplitude = 0.6f;
+    vibration.duration = 60000000; // 60ms, in nanoseconds
+    vibration.frequency = XR_FREQUENCY_UNSPECIFIED;
+
+    XrHapticActionInfo info = { XR_TYPE_HAPTIC_ACTION_INFO };
+    info.action = ctx->hapticAction;
+    info.subactionPath = ctx->handPaths[hand];
+    xrApplyHapticFeedback(ctx->session, &info, (const XrHapticBaseHeader*)&vibration);
+}
+
+// Where the desktop audio should feel like it's coming from: pan toward
+// whichever side the centre screen is on relative to where the head is
+// actually facing, quieter the further back the user leans. There's only
+// one audio stream for the whole desktop (Sunshine mixes it before it ever
+// reaches us), so this positions the whole mix at one point rather than
+// per-window - the centre screen is the honest choice for that point.
+static void updateProductivitySpatialAudio(XrCtx* ctx, float* out) {
+    XrSpaceLocation headLoc = { XR_TYPE_SPACE_LOCATION };
+    const XrSpaceLocationFlags needed = XR_SPACE_LOCATION_POSITION_VALID_BIT
+            | XR_SPACE_LOCATION_ORIENTATION_VALID_BIT;
+    if (!(XR_SUCCEEDED(xrLocateSpace(ctx->viewSpace, ctx->localSpace,
+                                     ctx->predictedDisplayTime, &headLoc))
+            && (headLoc.locationFlags & needed) == needed)) {
+        return;
+    }
+
+    XrPosef anchor = productivityScreenPose((PRODUCTIVITY_SCREEN_COUNT - 1) / 2);
+    Vec3 anchorPos = { anchor.position.x, anchor.position.y, anchor.position.z };
+    Vec3 headPos = { headLoc.pose.position.x, headLoc.pose.position.y, headLoc.pose.position.z };
+    Vec3 toAnchor = vecSub(anchorPos, headPos);
+
+    // Into head-local space: local.x is lateral (right positive), matching
+    // what a stereo balance control needs directly.
+    Vec3 local = quatRotate(quatConj(headLoc.pose.orientation), toAnchor);
+    float distance = sqrtf(local.x * local.x + local.y * local.y + local.z * local.z);
+    if (distance < 0.05f) {
+        return;
+    }
+
+    float pan = local.x / distance;
+    if (pan < -1.0f) pan = -1.0f;
+    if (pan > 1.0f) pan = 1.0f;
+
+    // 1.0 at the default screen distance, falling off (not muting) further
+    // back. Once Phase 2's distance slider exists this starts meaning
+    // something more than "always the default."
+    float gain = PRODUCTIVITY_DISTANCE_M / distance;
+    if (gain > 1.0f) gain = 1.0f;
+    if (gain < 0.2f) gain = 0.2f;
+
+    out[IN_AUDIO_PAN] = pan;
+    out[IN_AUDIO_GAIN] = gain;
+}
+
 // Phase 1's entire productivity input path: is a controller pointing at the
 // exit button, and was the trigger just pressed. Deliberately independent of
 // the single-screen hit-testing below (screenProject is reused, but nothing
@@ -3439,6 +3513,7 @@ static void updateProductivityInput(XrCtx* ctx, jboolean pointerEnabled, float* 
                 && u >= 0.0f && u <= 1.0f && v >= 0.0f && v <= 1.0f
                 && ctx->triggerEdge[h]) {
             out[IN_EXIT_PRESSED] = 1.0f;
+            fireHaptic(ctx, h);
         }
     }
 }
@@ -3463,8 +3538,14 @@ Java_com_limelight_binding_video_XrRenderer_nativeUpdateInput(JNIEnv* env, jobje
     // Zero is a real cell, so "nothing picked" has to be said explicitly. Every
     // early return below would otherwise read as a press on the first one.
     out[IN_PICKER_PICK] = -1.0f;
+    // Neutral balance/gain by default - Gaming mode never reaches the code
+    // that would change these, so its audio is always exactly this, i.e.
+    // untouched.
+    out[IN_AUDIO_PAN] = 0.0f;
+    out[IN_AUDIO_GAIN] = 1.0f;
 
     if (ctx != NULL && ctx->productivityMode) {
+        updateProductivitySpatialAudio(ctx, out);
         updateProductivityInput(ctx, pointerEnabled, out);
         (*env)->SetFloatArrayRegion(env, outArr, 0, IN_SLOTS, out);
         return;
