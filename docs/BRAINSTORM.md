@@ -645,10 +645,40 @@ matching "reuse the encoder as-is" directly.
     simply absent/defaulted). VS Full bundles the same patch into a
     complete fresh-install build. Same underlying code either way.
 
-Not yet done: any of the above is still a plan, not code. Next real step
-when picked up is likely #1-#4 (new config + the new session struct +
-bypassing `proc::proc` for the new path), since #5 onward depend on that
-foundation existing first.
+**Started 2026-09-16.** Public repo:
+https://github.com/r0mn-creator/virtual-sunshine, local clone
+`/home/roman/VirtualSunshine`. Cloned from Apollo directly (not a GitHub
+"Fork" — same approach as Virtual Moonlight's own base), README credits
+Apollo/ClassicOldSong and Sunshine/LizardByte properly, GPL-3.0 carried
+over unchanged.
+
+**Before any patch code: validating the build pipeline first.** Apollo's
+own CI workflows aren't in their current public repo (confirmed via `gh
+api` — 404 on `.github/workflows`, despite their own `docs/building.md`
+documenting a "fork → activate workflows → trigger CI" remote-build flow).
+Found why: `git log --all --full-history -- .github/workflows` shows the
+whole directory was deleted at commit `da5a4e3e2` (2025-07-14) — recovered
+the last working `ci-windows.yml` from its parent commit and adapted it
+into `.github/workflows/windows-release.yml`, trimmed down (no docs/
+coverage/test steps, no multi-OS `workflow_call` orchestration, just
+build → package with CPack (NSIS installer + ZIP) → publish as a GitHub
+pre-release). First run is building an **unmodified** Apollo through this
+pipeline as a checkpoint — no Productivity capability yet, just proving
+the pipeline itself produces a working Windows binary before adding any
+patch complexity on top of an unverified foundation.
+
+**Real constraint this whole sub-project runs under**: development happens
+on Linux; Apollo's Windows capture code (DXGI) can only build/run on
+Windows. Portable C++ (config, session logic, confighttp UI — the actual
+patch surface per the plan above) can be compile-checked here in principle,
+but end-to-end verification needs either this CI pipeline or the user's
+own Windows PC. Same shipped-compiled-but-unverified posture as the Quest
+haptics/audio work.
+
+Not yet done: any of the 10 steps above is still a plan, not code. Next
+real step once the baseline build is confirmed working is #1-#4 (new
+config + the new session struct + bypassing `proc::proc` for the new
+path), since #5 onward depend on that foundation existing first.
 
 ## Native Quest 3 feel — haptics and spatial audio shipped
 
