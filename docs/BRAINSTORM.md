@@ -260,6 +260,19 @@ themselves, in its normal windowed form, same as they would sitting at the
 PC. Falls back to launching the tapped app unchanged if the PC has no app
 named "Desktop" (a user could have renamed or removed it).
 
+**Confirmed for multi-screen PMode too (2026-09-16): the app list never
+appears at all.** Once the user picks a PC in Productivity mode, there is no
+intermediate "choose an app" step the way Gaming mode has one — Steam and
+whatever else is in that PC's Apollo app list is skipped entirely, every
+time. Picking a PC goes straight into the multi-screen Desktop session: the
+client opens N concurrent launch requests (one per real display, capped by
+`pmode_displays`) all against that same single "Desktop" app entry, each
+tagged with a different `pmodeDisplay` value (see the Virtual Sunshine
+section below) so the host knows which physical monitor to hand each
+connection. From the user's perspective there's exactly one action —
+"choose the PC" — and the full desktop across all configured screens is
+just what Productivity mode *is*, not a launch choice among several.
+
 ## Multi-screen rendering — scoping notes (2026-09-15)
 
 Explored `xr-renderer/xr_renderer.c` to scope the actual "3 screens" work.
@@ -537,6 +550,12 @@ patch to Apollo**, not two different codebases:
   it — without touching the user's existing config, pairings, or app list.
   Build and test this one first.
 
+**Superseded (2026-09-16, see "Packaging simplified" below): these are not
+two separate packaging efforts.** They're one build, applied two different
+ways. Kept here because the underlying constraint (don't make users
+reinstall/reconfigure) is still exactly right — only the "two personalities
+= two build pipelines" framing was wrong.
+
 **Explicitly reusing, not rewriting: the encoder and input-handling code.**
 The user was specific about this. The patch's actual job is narrower than
 the Phase 2 sketch above suggested — it doesn't need to generalize
@@ -561,12 +580,21 @@ itself being single-instance. A second capture loop can create a second
 encoder session using the exact same class, no encoder changes needed —
 matching "reuse the encoder as-is" directly.
 
+**Status update (2026-09-16): steps 1, 3, 4, 5 done; 6/7 turned out to need
+less new code than planned; 2 and 10 still not started.** Real code is
+pushed to `master` in the `virtual-sunshine` repo (commits `b664ad7c`,
+`29ab3f0a`). Detail per step below; the biggest surprise was step 6/7 — see
+those for why.
+
 1. **New config surface.** Add `productivity_enabled` and a
    `productivity_displays` list (output names, reusing whatever
    `display_device.cpp` already enumerates) to `config.h`/`config.cpp` —
    the same pattern as the existing single `output_name`, just a list
    instead of one value. This is additive; existing config keys and
    values are untouched.
+   **Done, named `pmode_enabled`/`pmode_displays` instead** (shorter, "PMode"
+   is the shorthand we settled on in conversation) — same `video_t` struct,
+   same `bool_f`/`list_string_f` parsing pattern as `output_name`.
 
 2. **New confighttp tab.** A Productivity panel in the existing config
    web UI (`confighttp.cpp`) — likely just checkboxes over the detected
@@ -580,6 +608,13 @@ matching "reuse the encoder as-is" directly.
    touching `proc::proc.display_name` or `chosen_encoder`'s selection
    logic at all. This is the "new parallel path" instead of "generalize
    the singleton."
+   **Done, simpler than planned: no new struct needed.** A `pmode_display`
+   string field on `rtsp_stream::launch_session_t` (set from a new
+   `pmodeDisplay` query param on `/launch`) flows straight into
+   `stream::session_t`, and `video.cpp` keeps a small
+   `unordered_map<display_name, capture_thread_async_ctx_t>` registry
+   instead of a whole parallel session type. Less code, same isolation
+   property — nothing here reads or writes `proc::proc`.
 
 4. **Bypass `proc::proc` for capture display selection on this path.**
    The new productivity capture loop(s) read display targets from the
@@ -588,6 +623,13 @@ matching "reuse the encoder as-is" directly.
    `display_name` the existing gaming path uses. The two paths can run
    concurrently without fighting over the same variable because they
    never share it.
+   **Done.** `video::captureThread()` gained one new parameter, a pinned
+   display name, used only on the PMode path — verified by re-reading
+   every line that previously touched `proc::proc.display_name` or the
+   Gaming-only display-switch mailbox event and gating each one behind
+   "is this a PMode thread." Gaming's own call site is untouched byte-for-
+   byte aside from now passing that parameter explicitly as empty (see the
+   `std::thread` gotcha two paragraphs below).
 
 5. **One encoder session per productivity display, reusing the existing
    class.** Each productivity capture loop instantiates its own
@@ -597,6 +639,14 @@ matching "reuse the encoder as-is" directly.
    of this: concurrent hardware encoder session limits on the host GPU/
    driver. Needs a graceful failure path (clear error, not a crash) if a
    given GPU can't open N simultaneous hardware sessions.
+   **Done for the "reuse the class" part** — `video::capture_pmode()`
+   mirrors the existing `capture_async()` almost line for line, calling
+   `make_encode_device`/`encode_run` exactly as Gaming does, just against
+   its own per-display `capture_thread_async_ctx_t`. **Not yet done:** the
+   graceful-failure path for a GPU that can't open N simultaneous hardware
+   sessions — today a failed encoder open on the 2nd/3rd display just
+   silently ends that one screen's session rather than surfacing a clear
+   error. Untested on real hardware either way.
 
 6. **Expose it through the existing app-launch mechanism, not a new
    protocol.** Add a reserved app entry (e.g. "Desktop — Productivity")
@@ -608,6 +658,19 @@ matching "reuse the encoder as-is" directly.
    today (`AppView.resolveLaunchApp`) — this needs only a small update to
    look for the productivity-specific name when in Productivity mode, no
    new client-side protocol work.
+   **Turned out to need no new app entry at all.** Re-read `nvhttp.cpp`'s
+   actual `launch()` handler (lines ~1224-1294): if a second launch call
+   targets the *same* `appid`/`appuuid` as the one already running, it
+   takes the existing "resuming the same app" branch — no
+   `proc::proc.execute()` call, no "an app is already running" rejection,
+   just a `display_device::configure_display`+`probe_encoders()` call
+   gated on `no_active_sessions` (so it only really runs for the first of
+   the N launches). Since all N of Virtual Moonlight's PMode connections
+   target the plain existing **"Desktop"** app (see the section above —
+   no separate Productivity entry needed, the app list is skipped
+   entirely), this branch already does the right thing for free. The only
+   new code was reading the `pmodeDisplay` query param (step 1's job) so
+   each of those N launches carries which physical display it's for.
 
 7. **Allow N concurrent sessions for productivity launches specifically,
    without touching the existing single-slot gaming behavior.**
@@ -623,6 +686,16 @@ matching "reuse the encoder as-is" directly.
    Moonlight sessions running concurrently, not one session carrying 3
    video channels. No RTSP/video-channel protocol changes needed, just
    permission for more than one to exist at once for this specific case.
+   **Also turned out to already work, same finding as step 6.**
+   `_session_slots` being a `set` was already enough — nothing in the
+   researched code path actually enforces "one session" at the RTSP/
+   session-tracking layer for sessions of the *same* app; the "only one
+   app running" restriction lives entirely in `nvhttp.cpp`'s launch
+   handler (step 6), which the "resuming the same app" branch already
+   sidesteps. No slot-tracking code needed. **Not yet verified**: this
+   reasoning is grounded in reading the source, not in an actual 3-
+   connections-at-once test — that's the real test once client-side work
+   (opening N connections) exists.
 
 8. **Input stays exactly as-is.** Per-session input/control handling
    (`input.cpp`) is scoped to `session_t` already for the single-session
@@ -692,10 +765,89 @@ unmodified Apollo (v0.4.8 + the two build fixes above), no Productivity
 capability yet. This is the confirmed-working foundation the actual patch
 (steps 1-10 above) now gets built on top of.
 
-Not yet done: any of the 10 patch steps above is still a plan, not code.
-Next real step is #1-#4 (new config + the new session struct + bypassing
-`proc::proc` for the new path), since #5 onward depend on that foundation
-existing first.
+**Update (2026-09-16): steps 1, 3, 4, 5 are real, committed code** (see
+status notes inline above); 6 and 7 needed no new code at all once the
+actual `nvhttp.cpp` launch handler was read closely. **Still not started:**
+step 2 (the confighttp Productivity tab — deliberately skipped for now,
+scoped out when the user asked for "just the pieces that talk to PMode"),
+step 9 (regression check — needs a real Windows box, not yet run), and
+step 10 (packaging — see "Packaging simplified" below, which changes what
+step 10 even means). Step 8 (input) still unverified, same caveat as
+written above.
+
+### A real bug found along the way: `std::thread` and default arguments
+
+Worth recording since it'll bite again if a similar pattern gets reused.
+`captureThread()` initially had the new pinned-display parameter as a
+default argument (`= {}`) so the existing Gaming call site wouldn't need to
+change. It compiled locally-reasoned-about fine but **failed real CI**:
+`std::thread`'s constructor invokes its target indirectly through a stored
+function-pointer type that includes *all* parameters the function has —
+default arguments are a call-site convenience that doesn't survive that
+indirection, so the Gaming call site (which relied on the default) hit a
+`static assertion failed: std::thread arguments must be invocable after
+conversion to rvalues`. Fixed by passing the argument explicitly at both
+`std::thread{...}` construction sites and removing the now-misleading
+default entirely. **Lesson**: never give a `std::thread` target function a
+default argument and expect to skip passing it — pass everything
+explicitly, always.
+
+## Packaging simplified (2026-09-16): one build, two application methods
+
+Re-examined the "VS Full vs VS Productivity" packaging split above after
+the user asked a very direct question: *if updates are just drag-and-drop
+new files into the folder and relaunch, can the same mechanism deliver
+PMode to an existing install?* Checked the actual code rather than assuming:
+
+- `platf::appdata()` (`src/platform/windows/misc.cpp:129`) returns
+  `<the exe's own directory>/config` — config, `sunshine.conf`, `apps.json`,
+  credentials, and `display_device.state` all live in a `config/` subfolder
+  *next to the binary*, never inside anything a plain file overwrite would
+  touch.
+- The NSIS installer (`cmake/packaging/windows_nsis.cmake`) already runs an
+  uninstall-before-install step on upgrade, but its own "delete
+  $INSTDIR (config, cover images, settings)" prompt defaults to **No**
+  (`/SD IDNO`) even when run silently/automatically — someone at Apollo
+  already engineered this to be safe.
+
+**Conclusion: this isn't two packaging pipelines, it's one build applied
+two ways.**
+- **Fresh install** (no existing Apollo/Sunshine/Virtual Sunshine on the
+  machine): run the NSIS installer. It provisions the SudoVDA driver,
+  Windows service, firewall rules, and gamepad driver — one-time setup a
+  raw file copy can't do.
+- **Update / add PMode to an existing install**: extract the portable ZIP's
+  files directly over the existing install folder, leave `config/` alone,
+  relaunch. Works whether the existing install is a previous Virtual
+  Sunshine build *or* a plain vanilla Apollo install someone already had
+  for gaming — since PMode is compiled into the same `sunshine.exe`/DLLs,
+  dropping our files in is simultaneously "update Virtual Sunshine" and
+  "add PMode to Apollo." No driver/service reprovisioning needed in this
+  case because a working existing install already has all of that set up.
+
+This retroactively answers what step 10 of the implementation plan above
+actually needs to be: no separate "VS Productivity build," just clear
+instructions (and eventually a README section) explaining that the
+portable ZIP is the update/upgrade path and the installer is the
+fresh-install path, both built from the exact same source.
+
+**One decision this forced**: our `CMakeLists.txt` still declared
+`project(Apollo ...)`, meaning our own installer silently identified itself
+*as Apollo* — same install directory, same registry entry — so installing
+it would have silently upgraded-in-place over a user's real Apollo install
+without asking. Asked the user to choose between keeping that (free
+silent-upgrade behavior, but risky/surprising) or rebranding now (safer,
+but loses that automatic behavior for anyone still on plain Apollo — they'd
+need the drag-and-drop path above instead, or a future explicit migration
+step, to get PMode). **Chose to rebrand now.** Renamed the CMake project to
+`VirtualSunshine` (commit `29ab3f0a`) — own install directory
+(`C:\Program Files\VirtualSunshine\`), own registry entry, updated
+publisher metadata and the one leftover "Apollo" string in the installer's
+component descriptions. The actual binary filename (`sunshine.exe`) and
+internal folder layout were deliberately left unchanged, since the
+drag-and-drop update mechanism above depends on that layout matching an
+existing Apollo install, not on what the top-level folder or registry
+entry is called.
 
 ## Native Quest 3 feel — haptics and spatial audio shipped
 
