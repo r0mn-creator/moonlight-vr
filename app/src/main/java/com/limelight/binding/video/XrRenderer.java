@@ -133,10 +133,19 @@ public class XrRenderer implements SurfaceTexture.OnFrameAvailableListener {
     // Spatial audio: -1..1 left/right balance and 0..1 distance gain
     private static final int IN_AUDIO_PAN = 19;
     private static final int IN_AUDIO_GAIN = 20;
-    private static final int IN_SLOTS = 21;
+    // Phase 2: pointer/click on the 3 PMode screens themselves, not just the
+    // exit button. IN_PMODE_SCREEN is -1 when nothing is being pointed at.
+    private static final int IN_PMODE_HIT = 21;
+    private static final int IN_PMODE_SCREEN = 22;
+    private static final int IN_PMODE_U = 23;
+    private static final int IN_PMODE_V = 24;
+    private static final int IN_PMODE_BUTTONS = 25;
+    private static final int IN_SLOTS = 26;
     private static final int POSE_VALUES = 9;
     private final float[] inputState = new float[IN_SLOTS];
     private int heldButtons;
+    private int pmodeHeldButtons;
+    private int pmodeLastScreenIndex = -1;
     private InputListener inputListener;
     private Context prefsContext;
 
@@ -192,6 +201,10 @@ public class XrRenderer implements SurfaceTexture.OnFrameAvailableListener {
         // Desktop audio balance/gain relative to the user's head and the
         // centre screen. Always (0, 1) outside Productivity mode.
         void onVrSpatialAudio(float pan, float gain);
+        // Pointer/click on one of the N PMode screens (screenIndex 0-based).
+        // Never fires outside Productivity mode.
+        void onVrProductivityPointerMove(int screenIndex, float u, float v);
+        void onVrProductivityButton(int screenIndex, int button, boolean down);
     }
 
     public void setInputListener(InputListener listener) {
@@ -943,6 +956,41 @@ public class XrRenderer implements SurfaceTexture.OnFrameAvailableListener {
 
         if (inputListener != null) {
             inputListener.onVrSpatialAudio(inputState[IN_AUDIO_PAN], inputState[IN_AUDIO_GAIN]);
+        }
+
+        if (inputListener != null) {
+            int screenIndex = (int)inputState[IN_PMODE_SCREEN];
+            if (inputState[IN_PMODE_HIT] != 0.0f && screenIndex >= 0) {
+                pmodeLastScreenIndex = screenIndex;
+                inputListener.onVrProductivityPointerMove(screenIndex, inputState[IN_PMODE_U],
+                        inputState[IN_PMODE_V]);
+
+                int pmodeButtons = (int)inputState[IN_PMODE_BUTTONS];
+                int pmodeChanged = pmodeButtons ^ pmodeHeldButtons;
+                if (pmodeChanged != 0) {
+                    for (int i = 0; i < 3; i++) {
+                        int mask = 1 << i;
+                        if ((pmodeChanged & mask) != 0) {
+                            inputListener.onVrProductivityButton(screenIndex, i, (pmodeButtons & mask) != 0);
+                        }
+                    }
+                    pmodeHeldButtons = pmodeButtons;
+                }
+            }
+            else if (pmodeHeldButtons != 0 && pmodeLastScreenIndex >= 0) {
+                // The ray left the screen mid-press - release whatever was
+                // still held on whichever screen it was last down on, rather
+                // than leaving the host thinking a button is stuck down.
+                // Same "release always counts" rule the single-screen path
+                // already follows.
+                for (int i = 0; i < 3; i++) {
+                    int mask = 1 << i;
+                    if ((pmodeHeldButtons & mask) != 0) {
+                        inputListener.onVrProductivityButton(pmodeLastScreenIndex, i, false);
+                    }
+                }
+                pmodeHeldButtons = 0;
+            }
         }
     }
 

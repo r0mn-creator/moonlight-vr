@@ -108,7 +108,16 @@
 // Productivity mode, so Gaming's audio is never touched.
 #define IN_AUDIO_PAN 19
 #define IN_AUDIO_GAIN 20
-#define IN_SLOTS    21
+// Phase 2: pointer/click control for the 3 PMode screens themselves (Phase 1
+// only ever hit-tested the exit button). -1 in IN_PMODE_SCREEN means no
+// screen is currently under the ray, same "not a real value" convention as
+// IN_PICKER_PICK's -1.
+#define IN_PMODE_HIT     21
+#define IN_PMODE_SCREEN  22
+#define IN_PMODE_U       23
+#define IN_PMODE_V       24
+#define IN_PMODE_BUTTONS 25
+#define IN_SLOTS    26
 
 // Grab thresholds for the grip, and the range a resize is allowed to reach
 #define SCREEN_MIN_WIDTH 0.8f
@@ -485,6 +494,7 @@ typedef struct {
     int gripEdge[SRC_COUNT];
     int grabByTrigger;
     int buttonsDown;
+    int pmodeButtonsDown;
     float scrollCarry;
     long lastInputNs;
 
@@ -3521,12 +3531,16 @@ static void computeSpatialAudio(XrCtx* ctx, XrPosef screenPose, float referenceD
     out[IN_AUDIO_GAIN] = gain;
 }
 
-// Phase 1's entire productivity input path: is a controller pointing at the
-// exit button, and was the trigger just pressed. Deliberately independent of
-// the single-screen hit-testing below (screenProject is reused, but nothing
-// about hoverKind/grabMode/the picker is touched) - one button, one job.
+// Phase 1 was just the exit button. Phase 2 adds pointer/left-click on the
+// 3 screens themselves - deliberately not the single-screen hover-state
+// machine below (no gaze, no grab/resize, no filtering): one ray, whichever
+// of the 3 screens (or the exit button) it lands on first, one mouse button.
+// That machine can come later if this turns out not to be enough.
 static void updateProductivityInput(XrCtx* ctx, jboolean pointerEnabled, float* out) {
+    out[IN_PMODE_SCREEN] = -1.0f;
+
     if (!ctx->inputReady || !pointerEnabled || ctx->sessionState != XR_SESSION_STATE_FOCUSED) {
+        ctx->pmodeButtonsDown = 0;
         return;
     }
 
@@ -3537,11 +3551,24 @@ static void updateProductivityInput(XrCtx* ctx, jboolean pointerEnabled, float* 
     sync.countActiveActionSets = 1;
     sync.activeActionSets = &active;
     if (XR_FAILED(xrSyncActions(ctx->session, &sync))) {
+        ctx->pmodeButtonsDown = 0;
         return;
     }
 
     XrPosef buttonPose = productivityMenuItemPose(PRODUCTIVITY_MENU_EXIT_INDEX,
                                                   PRODUCTIVITY_MENU_ITEM_COUNT);
+
+    // Same quad height the render path computes for these screens
+    // (renderVideoFrame's productivity branch) - hit-testing has to agree
+    // with what's actually drawn, or the ray and the picture disagree about
+    // where the screen's edges are.
+    float colWidth = (float)ctx->videoWidth / PRODUCTIVITY_SCREEN_COUNT;
+    float colHeight = (float)ctx->videoHeight;
+    float quadHeight = PRODUCTIVITY_SCREEN_WIDTH_M * (colHeight / colWidth);
+
+    int screenHit = -1;
+    int hitHand = -1;
+    float hitU = 0.0f, hitV = 0.0f;
 
     for (int h = 0; h < HAND_COUNT; h++) {
         int wasDown = ctx->triggerDown[h];
@@ -3568,6 +3595,39 @@ static void updateProductivityInput(XrCtx* ctx, jboolean pointerEnabled, float* 
                 && ctx->triggerEdge[h]) {
             out[IN_EXIT_PRESSED] = 1.0f;
             fireHaptic(ctx, h);
+            // Exit takes priority over the screens for this hand - can't be
+            // pointing at both at once anyway, they don't overlap.
+            continue;
+        }
+
+        if (screenHit < 0) {
+            for (int i = 0; i < PRODUCTIVITY_SCREEN_COUNT; i++) {
+                float su, sv;
+                if (screenProject(loc.pose, productivityScreenPose(i), PRODUCTIVITY_SCREEN_WIDTH_M,
+                                  quadHeight, 0.0f, 0, &su, &sv)
+                        && su >= 0.0f && su <= 1.0f && sv >= 0.0f && sv <= 1.0f) {
+                    screenHit = i;
+                    hitHand = h;
+                    hitU = su;
+                    hitV = sv;
+                    break;
+                }
+            }
+        }
+    }
+
+    int mask = (screenHit >= 0 && ctx->triggerDown[hitHand]) ? VR_BUTTON_LEFT : 0;
+    int prevMask = ctx->pmodeButtonsDown;
+    ctx->pmodeButtonsDown = mask;
+
+    if (screenHit >= 0) {
+        out[IN_PMODE_HIT] = 1.0f;
+        out[IN_PMODE_SCREEN] = (float)screenHit;
+        out[IN_PMODE_U] = hitU;
+        out[IN_PMODE_V] = hitV;
+        out[IN_PMODE_BUTTONS] = (float)mask;
+        if ((~prevMask & mask) != 0) {
+            fireHaptic(ctx, hitHand);
         }
     }
 }

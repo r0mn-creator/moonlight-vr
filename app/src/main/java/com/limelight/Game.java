@@ -2611,6 +2611,13 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     // lazy XrRenderer creation, since there is no single decoder driving it.
     private void startProductivitySession() {
         productivityXrRenderer = new XrRenderer();
+        // Gaming gets this for free from MediaCodecDecoderRenderer's lazy
+        // XrRenderer creation (it checks "activity instanceof InputListener"
+        // itself); Productivity creates its own XrRenderer directly, so
+        // nothing wires this automatically - without it, the exit button,
+        // spatial audio, and pointer/button/scroll dispatch are all silently
+        // inert (dispatchInput() no-ops whenever inputListener is null).
+        productivityXrRenderer.setInputListener(Game.this);
         boolean ok = productivityXrRenderer.start(Game.this, prefConfig.width, prefConfig.height, prefConfig);
         if (!ok) {
             LimeLog.severe("PMode: XrRenderer failed to start");
@@ -2954,6 +2961,68 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         if (audioRenderer != null) {
             audioRenderer.setSpatialAudio(pan, gain);
         }
+    }
+
+    // Same absolute-positioning approach as onVrPointerMove above, just
+    // routed to whichever screen's own AIDL service instead of the single
+    // shared conn - each screen has its own resolution/connection.
+    @Override
+    public void onVrProductivityPointerMove(int screenIndex, float u, float v) {
+        IPModeScreenService service = pmodeService(screenIndex);
+        if (service == null) {
+            return;
+        }
+
+        int screenWidth = prefConfig.width / PMODE_SCREEN_COUNT;
+        int screenHeight = prefConfig.height;
+        int x = (int)(u * screenWidth);
+        int y = (int)(v * screenHeight);
+        x = Math.max(0, Math.min(screenWidth - 1, x));
+        y = Math.max(0, Math.min(screenHeight - 1, y));
+
+        try {
+            service.sendMousePosition(x, y, screenWidth, screenHeight);
+        } catch (RemoteException e) {
+            LimeLog.warning("PMode: sendMousePosition failed for screen " + screenIndex + ": " + e);
+        }
+    }
+
+    @Override
+    public void onVrProductivityButton(int screenIndex, int button, boolean down) {
+        IPModeScreenService service = pmodeService(screenIndex);
+        if (service == null) {
+            return;
+        }
+
+        byte code;
+        switch (button) {
+            case 1:
+                code = MouseButtonPacket.BUTTON_RIGHT;
+                break;
+            case 2:
+                code = MouseButtonPacket.BUTTON_MIDDLE;
+                break;
+            default:
+                code = MouseButtonPacket.BUTTON_LEFT;
+                break;
+        }
+
+        try {
+            if (down) {
+                service.sendMouseButtonDown(code);
+            } else {
+                service.sendMouseButtonUp(code);
+            }
+        } catch (RemoteException e) {
+            LimeLog.warning("PMode: sendMouseButton failed for screen " + screenIndex + ": " + e);
+        }
+    }
+
+    private IPModeScreenService pmodeService(int screenIndex) {
+        if (!pmodeSessionStarted || screenIndex < 0 || screenIndex >= PMODE_SCREEN_COUNT) {
+            return null;
+        }
+        return pmodeServices[screenIndex];
     }
 
     @Override

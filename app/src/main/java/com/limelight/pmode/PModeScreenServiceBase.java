@@ -68,6 +68,14 @@ public abstract class PModeScreenServiceBase extends Service {
         }
 
         @Override
+        public void sendMousePosition(int x, int y, int referenceWidth, int referenceHeight) {
+            NvConnection c = conn;
+            if (c != null) {
+                c.sendMousePosition((short) x, (short) y, (short) referenceWidth, (short) referenceHeight);
+            }
+        }
+
+        @Override
         public void sendMouseButtonDown(int mouseButton) {
             NvConnection c = conn;
             if (c != null) {

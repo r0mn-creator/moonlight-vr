@@ -22,6 +22,10 @@ oneway interface IPModeScreenService {
     void disconnect();
 
     void sendMouseMove(int deltaX, int deltaY);
+    // Absolute position within this screen's own resolution (0,0 top-left) -
+    // what a VR ray hit-test naturally produces, unlike the relative deltas
+    // sendMouseMove takes.
+    void sendMousePosition(int x, int y, int referenceWidth, int referenceHeight);
     void sendMouseButtonDown(int mouseButton);
     void sendMouseButtonUp(int mouseButton);
     void sendMouseScroll(int scrollClicks);
