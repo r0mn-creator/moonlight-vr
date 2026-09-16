@@ -18,6 +18,11 @@ import com.limelight.binding.video.MediaCodecDecoderRenderer;
 import com.limelight.binding.video.MediaCodecHelper;
 import com.limelight.binding.video.PerfOverlayListener;
 import com.limelight.binding.video.XrRenderer;
+import com.limelight.pmode.IPModeScreenCallback;
+import com.limelight.pmode.IPModeScreenService;
+import com.limelight.pmode.PModeScreenService1;
+import com.limelight.pmode.PModeScreenService2;
+import com.limelight.pmode.PModeScreenService3;
 import com.limelight.nvstream.NvConnection;
 import com.limelight.nvstream.NvConnectionListener;
 import com.limelight.nvstream.StreamConfiguration;
@@ -61,6 +66,7 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.IBinder;
+import android.os.RemoteException;
 import android.util.Rational;
 import android.view.Display;
 import android.view.InputDevice;
@@ -83,6 +89,7 @@ import android.widget.Toast;
 import java.io.ByteArrayInputStream;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
+import java.security.cert.CertificateEncodingException;
 import java.security.cert.CertificateException;
 import java.security.cert.CertificateFactory;
 import java.security.cert.X509Certificate;
@@ -152,6 +159,23 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     private MediaCodecDecoderRenderer decoderRenderer;
     private AndroidAudioRenderer audioRenderer;
     private boolean reportedCrash;
+
+    // Virtual Sunshine PMode: Productivity mode never uses conn/decoderRenderer
+    // above - each screen is its own connection running in its own process
+    // (see com.limelight.pmode.PModeScreenServiceBase for why). These carry
+    // the connection params from onCreate's Intent-extra parsing through to
+    // surfaceChanged(), where the session actually starts, same lifecycle
+    // point Gaming's own conn.start() already uses.
+    private static final int PMODE_SCREEN_COUNT = 3;
+    private String pmodeHost;
+    private int pmodePort;
+    private int pmodeHttpsPort;
+    private String pmodeUniqueId;
+    private X509Certificate pmodeServerCert;
+    private XrRenderer productivityXrRenderer;
+    private final IPModeScreenService[] pmodeServices = new IPModeScreenService[PMODE_SCREEN_COUNT];
+    private final ServiceConnection[] pmodeServiceConnections = new ServiceConnection[PMODE_SCREEN_COUNT];
+    private boolean pmodeSessionStarted;
 
     // Set when the launcher tore its own task down to get the 2d panels out of
     // the way, so there is nothing left to go back to when the stream ends
@@ -367,6 +391,12 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         } catch (CertificateException e) {
             e.printStackTrace();
         }
+
+        pmodeHost = host;
+        pmodePort = port;
+        pmodeHttpsPort = httpsPort;
+        pmodeUniqueId = uniqueId;
+        pmodeServerCert = serverCert;
 
         if (appId == StreamConfiguration.INVALID_APP_ID) {
             finish();
@@ -1091,6 +1121,11 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         // XR session outlives us
         if (decoderRenderer != null) {
             decoderRenderer.stopXrRenderer();
+        }
+        // Same defensive teardown for Productivity - onVrExitRequested() is
+        // the normal path, this is the safety net if the activity died first.
+        if (prefConfig != null && prefConfig.productivityMode) {
+            stopProductivitySession();
         }
 
         if (controllerHandler != null) {
@@ -2559,9 +2594,165 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             // Update GameManager state to indicate we're "loading" while connecting
             UiHelper.notifyStreamConnecting(Game.this);
 
-            decoderRenderer.setRenderTarget(holder);
-            audioRenderer = new AndroidAudioRenderer(Game.this, prefConfig.enableAudioFx);
-            conn.start(audioRenderer, decoderRenderer, Game.this);
+            if (prefConfig.productivityMode) {
+                startProductivitySession();
+            } else {
+                decoderRenderer.setRenderTarget(holder);
+                audioRenderer = new AndroidAudioRenderer(Game.this, prefConfig.enableAudioFx);
+                conn.start(audioRenderer, decoderRenderer, Game.this);
+            }
+        }
+    }
+
+    // Virtual Sunshine PMode: starts N independent connections, each in its
+    // own process (PModeScreenService1/2/3), instead of the single in-process
+    // conn/decoderRenderer above. XrRenderer owns its own OpenXR session here
+    // directly - unlike Gaming, nothing routes through MediaCodecDecoderRenderer's
+    // lazy XrRenderer creation, since there is no single decoder driving it.
+    private void startProductivitySession() {
+        productivityXrRenderer = new XrRenderer();
+        boolean ok = productivityXrRenderer.start(Game.this, prefConfig.width, prefConfig.height, prefConfig);
+        if (!ok) {
+            LimeLog.severe("PMode: XrRenderer failed to start");
+            displayTransientMessage("Failed to start the Productivity session");
+            finish();
+            return;
+        }
+
+        final int screenWidth = prefConfig.width / PMODE_SCREEN_COUNT;
+        final int screenHeight = prefConfig.height;
+        final byte[] certBytes;
+        try {
+            certBytes = pmodeServerCert != null ? pmodeServerCert.getEncoded() : new byte[0];
+        } catch (CertificateEncodingException e) {
+            LimeLog.severe("PMode: failed to encode server certificate: " + e);
+            displayTransientMessage("Failed to start the Productivity session");
+            finish();
+            return;
+        }
+
+        Class<?>[] serviceClasses = { PModeScreenService1.class, PModeScreenService2.class, PModeScreenService3.class };
+        pmodeSessionStarted = true;
+
+        for (int i = 0; i < PMODE_SCREEN_COUNT; i++) {
+            final int screenIndex = i;
+            // Empty until the host exposes its pmode_displays list (see
+            // BRAINSTORM.md) - every screen falls back to Apollo's default
+            // output for now, which is enough to verify the pipeline (N
+            // connections, N decodes, N renders) before real per-monitor
+            // targeting exists.
+            final String pmodeDisplay = "";
+
+            Intent serviceIntent = new Intent(Game.this, serviceClasses[screenIndex]);
+            ServiceConnection connection = new ServiceConnection() {
+                @Override
+                public void onServiceConnected(ComponentName name, IBinder binder) {
+                    IPModeScreenService service = IPModeScreenService.Stub.asInterface(binder);
+                    pmodeServices[screenIndex] = service;
+
+                    Surface surface = productivityXrRenderer.getProductivityInputSurface(screenIndex);
+                    try {
+                        service.connect(surface, pmodeHost, pmodePort, pmodeHttpsPort, pmodeUniqueId,
+                                certBytes, pmodeDisplay, screenWidth, screenHeight, prefConfig.fps,
+                                prefConfig.bitrate, screenIndex == 0, pmodeCallback(screenIndex));
+                    } catch (RemoteException e) {
+                        LimeLog.severe("PMode: connect() failed for screen " + screenIndex + ": " + e);
+                    }
+                }
+
+                @Override
+                public void onServiceDisconnected(ComponentName name) {
+                    pmodeServices[screenIndex] = null;
+                }
+            };
+            pmodeServiceConnections[screenIndex] = connection;
+            if (!bindService(serviceIntent, connection, Context.BIND_AUTO_CREATE)) {
+                LimeLog.severe("PMode: failed to bind screen " + screenIndex + " service");
+                pmodeServiceConnections[screenIndex] = null;
+            }
+        }
+    }
+
+    // One connection terminating (host rejected the stream, network drop,
+    // etc.) ends the whole Productivity session rather than leaving the user
+    // with a partially-broken multi-screen view.
+    private IPModeScreenCallback pmodeCallback(final int screenIndex) {
+        return new IPModeScreenCallback.Stub() {
+            @Override
+            public void onStageStarting(String stage) {
+                LimeLog.info("PMode screen " + screenIndex + ": stage starting " + stage);
+            }
+
+            @Override
+            public void onStageComplete(String stage) {
+                LimeLog.info("PMode screen " + screenIndex + ": stage complete " + stage);
+            }
+
+            @Override
+            public void onStageFailed(String stage, int portFlags, int errorCode) {
+                LimeLog.severe("PMode screen " + screenIndex + ": stage failed " + stage
+                        + " (error " + errorCode + ")");
+                runOnUiThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        displayTransientMessage("Productivity screen " + (screenIndex + 1) + " failed to start");
+                        finish();
+                    }
+                });
+            }
+
+            @Override
+            public void onConnectionStarted() {
+                LimeLog.info("PMode screen " + screenIndex + ": connection started");
+            }
+
+            @Override
+            public void onConnectionTerminated(int errorCode) {
+                LimeLog.info("PMode screen " + screenIndex + ": connection terminated (" + errorCode + ")");
+                runOnUiThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        finish();
+                    }
+                });
+            }
+
+            @Override
+            public void onDisplayMessage(String message) {
+                runOnUiThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        displayTransientMessage(message);
+                    }
+                });
+            }
+        };
+    }
+
+    private void stopProductivitySession() {
+        if (!pmodeSessionStarted) {
+            return;
+        }
+        pmodeSessionStarted = false;
+
+        for (int i = 0; i < PMODE_SCREEN_COUNT; i++) {
+            IPModeScreenService service = pmodeServices[i];
+            if (service != null) {
+                try {
+                    service.disconnect();
+                } catch (RemoteException e) {
+                    LimeLog.warning("PMode: disconnect() failed for screen " + i + ": " + e);
+                }
+                pmodeServices[i] = null;
+            }
+            if (pmodeServiceConnections[i] != null) {
+                unbindService(pmodeServiceConnections[i]);
+                pmodeServiceConnections[i] = null;
+            }
+        }
+
+        if (productivityXrRenderer != null) {
+            productivityXrRenderer.prepareForStop();
         }
     }
 
@@ -2772,6 +2963,9 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         // teardown, and Productivity always launches with
         // EXTRA_RETURN_TO_PC_VIEW set (it's a VR session), so this lands
         // back on the PC list.
+        if (prefConfig.productivityMode) {
+            stopProductivitySession();
+        }
         runOnUiThread(new Runnable() {
             @Override
             public void run() {
