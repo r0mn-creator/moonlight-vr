@@ -47,6 +47,7 @@ app/.externalNativeBuild/
 *.keystore
 *.jks
 release-keystore-password.txt
+keystore.properties
 *.idsig
 
 # Full size source panoramas. Only the downsized copies under

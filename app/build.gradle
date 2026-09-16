@@ -1,5 +1,18 @@
 apply plugin: 'com.android.application'
 
+import java.util.Properties
+
+// Release signing: keystore.properties + the .jks it points to are both
+// gitignored and never committed. Losing this keystore means every future
+// beta can no longer be installed as an in-place update over this one -
+// back it up somewhere safe outside the repo.
+def keystorePropertiesFile = rootProject.file("keystore.properties")
+def keystoreProperties = new Properties()
+def hasReleaseSigning = keystorePropertiesFile.exists()
+if (hasReleaseSigning) {
+    keystoreProperties.load(new FileInputStream(keystorePropertiesFile))
+}
+
 android {
     ndkVersion "27.0.12077973"
 
@@ -11,11 +24,26 @@ android {
         minSdk 21
         targetSdk 34
 
-        versionName "12.1"
-        versionCode = 314
+        // 31402 was already installed on the test Quest 3 from earlier work
+        // (versionName "12.1-xr0.2") - versionCode must keep increasing from
+        // there for in-place updates to keep working, regardless of the
+        // versionName scheme used on top of it.
+        versionName "beta01"
+        versionCode = 31403
 
         // Generate native debug symbols to allow Google Play to symbolicate our native crashes
         ndk.debugSymbolLevel = 'FULL'
+    }
+
+    signingConfigs {
+        if (hasReleaseSigning) {
+            release {
+                storeFile rootProject.file(keystoreProperties['storeFile'])
+                storePassword keystoreProperties['storePassword']
+                keyAlias keystoreProperties['keyAlias']
+                keyPassword keystoreProperties['keyPassword']
+            }
+        }
     }
 
     flavorDimensions.add("root")
@@ -132,6 +160,10 @@ android {
 
             minifyEnabled true
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+
+            if (hasReleaseSigning) {
+                signingConfig signingConfigs.release
+            }
         }
     }
 
