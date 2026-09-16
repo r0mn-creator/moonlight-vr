@@ -2641,42 +2641,62 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         Class<?>[] serviceClasses = { PModeScreenService1.class, PModeScreenService2.class, PModeScreenService3.class };
         pmodeSessionStarted = true;
 
+        // Staggered, not simultaneous: binding (and therefore each screen's
+        // own MediaCodecDecoderRenderer construction, which probes the
+        // device's available video decoders via MediaCodecList) used to
+        // fire for all 3 screens within the same few milliseconds. Confirmed
+        // on real hardware that this hangs all 3 processes indefinitely
+        // right at that decoder-probing step - whatever's underneath
+        // MediaCodecList doesn't handle 3 processes hitting it at once.
+        // 400ms apart is enough to avoid that while still starting quickly.
+        Handler startHandler = new Handler();
         for (int i = 0; i < PMODE_SCREEN_COUNT; i++) {
             final int screenIndex = i;
-            // Empty until the host exposes its pmode_displays list (see
-            // BRAINSTORM.md) - every screen falls back to Apollo's default
-            // output for now, which is enough to verify the pipeline (N
-            // connections, N decodes, N renders) before real per-monitor
-            // targeting exists.
-            final String pmodeDisplay = "";
-
-            Intent serviceIntent = new Intent(Game.this, serviceClasses[screenIndex]);
-            ServiceConnection connection = new ServiceConnection() {
+            startHandler.postDelayed(new Runnable() {
                 @Override
-                public void onServiceConnected(ComponentName name, IBinder binder) {
-                    IPModeScreenService service = IPModeScreenService.Stub.asInterface(binder);
-                    pmodeServices[screenIndex] = service;
+                public void run() {
+                    if (!pmodeSessionStarted) {
+                        // Session was torn down (e.g. exit pressed) before
+                        // this screen's turn came up - don't bind it now.
+                        return;
+                    }
 
-                    Surface surface = productivityXrRenderer.getProductivityInputSurface(screenIndex);
-                    try {
-                        service.connect(surface, pmodeHost, pmodePort, pmodeHttpsPort, pmodeUniqueId,
-                                certBytes, pmodeDisplay, screenWidth, screenHeight, prefConfig.fps,
-                                prefConfig.bitrate, screenIndex == 0, pmodeCallback(screenIndex));
-                    } catch (RemoteException e) {
-                        LimeLog.severe("PMode: connect() failed for screen " + screenIndex + ": " + e);
+                    // Empty until the host exposes its pmode_displays list
+                    // (see BRAINSTORM.md) - every screen falls back to
+                    // Apollo's default output for now, which is enough to
+                    // verify the pipeline (N connections, N decodes, N
+                    // renders) before real per-monitor targeting exists.
+                    final String pmodeDisplay = "";
+
+                    Intent serviceIntent = new Intent(Game.this, serviceClasses[screenIndex]);
+                    ServiceConnection connection = new ServiceConnection() {
+                        @Override
+                        public void onServiceConnected(ComponentName name, IBinder binder) {
+                            IPModeScreenService service = IPModeScreenService.Stub.asInterface(binder);
+                            pmodeServices[screenIndex] = service;
+
+                            Surface surface = productivityXrRenderer.getProductivityInputSurface(screenIndex);
+                            try {
+                                service.connect(surface, pmodeHost, pmodePort, pmodeHttpsPort, pmodeUniqueId,
+                                        certBytes, pmodeDisplay, screenWidth, screenHeight, prefConfig.fps,
+                                        prefConfig.bitrate, screenIndex == 0, pmodeCallback(screenIndex));
+                            } catch (RemoteException e) {
+                                LimeLog.severe("PMode: connect() failed for screen " + screenIndex + ": " + e);
+                            }
+                        }
+
+                        @Override
+                        public void onServiceDisconnected(ComponentName name) {
+                            pmodeServices[screenIndex] = null;
+                        }
+                    };
+                    pmodeServiceConnections[screenIndex] = connection;
+                    if (!bindService(serviceIntent, connection, Context.BIND_AUTO_CREATE)) {
+                        LimeLog.severe("PMode: failed to bind screen " + screenIndex + " service");
+                        pmodeServiceConnections[screenIndex] = null;
                     }
                 }
-
-                @Override
-                public void onServiceDisconnected(ComponentName name) {
-                    pmodeServices[screenIndex] = null;
-                }
-            };
-            pmodeServiceConnections[screenIndex] = connection;
-            if (!bindService(serviceIntent, connection, Context.BIND_AUTO_CREATE)) {
-                LimeLog.severe("PMode: failed to bind screen " + screenIndex + " service");
-                pmodeServiceConnections[screenIndex] = null;
-            }
+            }, screenIndex * 400L);
         }
     }
 
