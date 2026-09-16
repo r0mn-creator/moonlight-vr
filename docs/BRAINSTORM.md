@@ -514,6 +514,47 @@ the actual user-facing goal (3 real monitors in VR, one setup, one pair)
 without touching a large unfamiliar C++ codebase its own maintainers
 already called messy in this exact area.
 
+### Correction (2026-09-16): this is a real patch after all, just narrowly scoped
+
+The orchestration-only Phase 1 above was superseded the same day, once the
+actual motivation was clarified further — worth keeping the reasoning
+above rather than deleting it, since the singleton finding still directly
+shapes what follows.
+
+**The real constraint: users like the user himself may already have a
+fully configured Sunshine/Apollo** (paired clients, app lists, custom
+settings) and shouldn't have to delete and reinstall to try this. That
+rules out "replace their host entirely" as the only option, and reframes
+Virtual Sunshine as **two packaging personalities of the same underlying
+patch to Apollo**, not two different codebases:
+
+- **VS Full** — a complete replacement build (both Gaming and Productivity)
+  for fresh installs or users willing to fully switch.
+- **VS Productivity** — an in-place update to an *existing* Apollo/Sunshine
+  install ("almost like a software update for Apollo or Sunshine"): adds a
+  new Productivity tab to Apollo's existing config web UI
+  (`confighttp.cpp`), and the new capture/session capability underneath
+  it — without touching the user's existing config, pairings, or app list.
+  Build and test this one first.
+
+**Explicitly reusing, not rewriting: the encoder and input-handling code.**
+The user was specific about this. The patch's actual job is narrower than
+the Phase 2 sketch above suggested — it doesn't need to generalize
+`proc::proc` to support arbitrary N concurrent apps. It needs exactly one
+new thing: **a second, parallel capture/session path specifically for
+Productivity**, running alongside whatever the existing gaming path is
+doing, reusing the same encoder wrapper and the same input/control
+protocol code as-is. That's a materially smaller, more honest patch than
+generalizing the whole session model — "one more specific kind of
+session" rather than "rebuild session management to be generic."
+
+**Not yet sketched, next when picked back up**: what the new config-UI tab
+actually needs to expose (monitor selection? on/off toggle? nothing at
+all if it's fully automatic), and the concrete shape of the new parallel
+capture/session path — how it coexists with `proc::proc`'s existing
+display-selection without the two fighting over the same GPU output or
+encoder session slots.
+
 ## Native Quest 3 feel — haptics and spatial audio shipped
 
 Asked what "feels like a native Quest 3 app, built by a pro VR dev" actually
