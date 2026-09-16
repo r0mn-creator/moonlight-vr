@@ -1016,13 +1016,49 @@ compiler** — with a real Quest 3 connected (`2G0YC5ZFCM01G3`):
 `:app:assembleRootDebug` (full APK), installed and launched on-device with
 no crash, native library loaded, reached `PcView` normally, and the 3
 `PModeScreenService` entries confirmed present in the actual packaged
-manifest. Doesn't exercise PMode streaming itself (nothing calls
-`connect()` yet) - that needs `Game.java`'s mode-branching connection
-lifecycle next, plus a live Virtual Sunshine host to actually test against.
-A real unknown alongside it: Quest 3's Snapdragon XR2 Gen2 concurrent
-hardware video decoder session limit hasn't been checked. 2-3 simultaneous
-`MediaCodec` decode sessions is very likely fine on this hardware, but
-unverified.
+manifest. **Step 4 shipped, 2026-09-16 (commit `2d38b569`) — the multi-process plan
+is now fully wired end to end in code.** `Game.java`'s `surfaceChanged()`
+branches: Productivity mode skips the single in-process `conn`/
+`decoderRenderer` entirely and instead creates its own `XrRenderer`
+directly (`new XrRenderer(); .start(this, ...)`) - it never goes through
+`MediaCodecDecoderRenderer`'s lazy XR-session creation, since there's no
+single decoder driving it anymore. It then binds all 3
+`PModeScreenService` processes and hands each one its own `Surface` via
+AIDL `connect()`, with connection params (host/port/cert/uniqueId) saved to
+instance fields at `onCreate` time since `surfaceChanged()` runs later and
+needs them. Teardown hooks into `onVrExitRequested()` (the real exit path)
+and `onDestroy()` (safety net, same spirit as the existing
+`decoderRenderer.stopXrRenderer()` call).
+
+**Known gaps, deliberately left open rather than silently papered over:**
+- `pmodeDisplay` is sent **empty** for all 3 screens - the host has no way
+  yet to advertise its `pmode_displays` list to the client (the step 8
+  dependency flagged from the start), so every screen currently falls back
+  to Apollo's default output. This is enough to verify the pipeline itself
+  (3 real connections, 3 real decodes, 3 real renders) even before real
+  per-monitor targeting exists - a genuinely useful interim test state, not
+  just a stopgap.
+- **No mouse/keyboard routing to the 3 screens yet** - matches this
+  project's own "Phase 1: no interaction" scoping already established for
+  the renderer. Today's PMode session is watch-only.
+- `decoderRenderer.getXrRenderer()`-based features (perf overlay,
+  background/foreground pause notification) don't apply to
+  `productivityXrRenderer` - those call sites weren't touched, so they
+  simply no-op for PMode instead of crashing, but the features aren't
+  wired up for the new renderer instance yet.
+
+**Verified**: `./gradlew compileRootDebugJavaWithJavac` and
+`assembleRootDebug` both clean, installed and launched on the connected
+Quest 3 (`2G0YC5ZFCM01G3`) with no crash. **Cannot yet exercise the new
+code path itself on-device** - that needs an actual paired PC running
+Virtual Sunshine to stream from, which this dev environment doesn't have.
+The next real milestone is the user testing this against a real Virtual
+Sunshine host on their own PC.
+
+A real unknown alongside all of this: Quest 3's Snapdragon XR2 Gen2
+concurrent hardware video decoder session limit hasn't been checked. 2-3
+simultaneous `MediaCodec` decode sessions is very likely fine on this
+hardware, but unverified.
 
 ## Native Quest 3 feel — haptics and spatial audio shipped
 
