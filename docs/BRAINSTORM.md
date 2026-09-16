@@ -337,6 +337,28 @@ Productivity sessions regardless of the depth toggle, since per-screen depth
 isn't built. Compiles and installs; needs an actual device test connected to
 a real PC to confirm it renders correctly.
 
+**Top menu bar with a working Exit button, shipped 2026-09-15** (before
+Phase 1 was even tested on-device — there's no Android back gesture inside
+an immersive OpenXR session, so this couldn't wait). Built modularly on
+purpose, since Phase 2's curve/distance/height/spacing controls need to
+slot into the same bar later:
+- `productivityMenuBarPose()` anchors the bar above the centre screen;
+  `productivityMenuItemPose(index, count)` lays out slots left-to-right —
+  adding a module later is raising `PRODUCTIVITY_MENU_ITEM_COUNT` and giving
+  the new index somewhere to draw/hit-test, not a restructure.
+- Exit is the only module so far: a Canvas-drawn door+arrow glyph
+  (`XrRenderer.buildExitButton`), uploaded through the *existing*
+  `nativeUploadPicker` env-button path (same swapchain Gaming's own env
+  button uses — safe to share since the two modes never render at once).
+- Real hit-testing, not just visual: `updateProductivityInput()` is a small
+  function isolated from the single-screen grab/hover/picker system, reusing
+  the existing `screenProject` ray-plane math and trigger-edge tracking.
+  Pressing Exit sets a new `IN_EXIT_PRESSED` slot, which becomes an
+  `InputListener.onVrExitRequested()` callback → `finish()` on the UI thread
+  — the same path the existing keyboard quit shortcut already uses, which
+  already returns to PcView for any VR session via the existing
+  `EXTRA_RETURN_TO_PC_VIEW` mechanism.
+
 **Phasing, to avoid building all of this at once**:
 - **Phase 1** (next, not started): get 3 flat screens rendering at all, in a
   fixed default wall arrangement (sensible constant curve/distance/height/
