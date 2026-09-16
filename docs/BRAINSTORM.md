@@ -849,6 +849,80 @@ drag-and-drop update mechanism above depends on that layout matching an
 existing Apollo install, not on what the top-level folder or registry
 entry is called.
 
+## First real end-to-end PMode test — beta02 through beta04, 2026-09-16
+
+The user actually tried Productivity mode for real, against a real
+Virtual Sunshine host, for the first time. Two real bugs found and fixed
+in quick succession, plus one wrong diagnosis corrected along the way.
+
+**beta02 attempt**: "just 1 screen pops up," no top menu bar. Initial
+device logs (a 40-minute logcat buffer covering earlier test launches too)
+showed active depth/stereo processing, which is Gaming-only - looked like
+the user had ended up in Gaming mode by mistake (tapping "Desktop" from
+the app grid works in *either* tab, since it's a normal Apollo app entry).
+**User corrected this** ("this is in pmode already, it did not work") -
+right call; the depth-stage logs were stale, from a different point in the
+mixed buffer, not from this actual attempt. Lesson: don't trust a long,
+multi-attempt logcat buffer to isolate one specific attempt - clear it and
+reproduce fresh.
+
+**beta03 attempt (fresh log)**: all 3 `pmode_screenN` processes visibly
+alive but producing zero further output after starting to construct their
+`MediaCodecDecoderRenderer` - a `W Binder` warning with a stack trace
+ending at `MediaCodecHelper.findPreferredDecoder`. **Misdiagnosed as a
+hang**: reasoned that 3 processes probing `MediaCodecList` at the same
+few-millisecond window could deadlock on this hardware, and shipped a fix
+staggering each screen's `bindService()` 400ms apart
+(`Handler.postDelayed`). Wrong call, but not a wasted one - the staggering
+is a real, harmless improvement, just not what was actually broken.
+
+**beta04 (the real fix)**: with beta03 installed, the user tried again -
+"still no screens," but this time device telemetry showed ~2000 frames
+actually rendered over the session (`AppLoadTimeTelemetryCommon: BeginFrame
+(2000)`), proving beta03 wasn't hung at all - the renderer was looping
+fine with nothing to display. Re-reading the *same* `W Binder` trace with
+more context (not truncated this time) showed the actual header line that
+had been cut off before:
+
+```
+java.lang.IllegalStateException: MediaCodecHelper must be initialized before use
+  at MediaCodecHelper.findPreferredDecoder
+  at MediaCodecDecoderRenderer.<init>
+  at PModeScreenServiceBase.doConnect
+```
+
+**Root cause**: `MediaCodecHelper` has per-process static state and throws
+if used before `initialize()` runs. `Game.java`'s main process calls it in
+`onCreate()` - which does nothing for the 3 separate `pmode_screenN`
+processes, each with their own fresh statics. Every screen's decoder setup
+died on this exception the instant `doConnect()` tried to construct
+`MediaCodecDecoderRenderer` - and since `doConnect()` runs inside a
+`oneway` AIDL transaction, the exception just got logged by Binder and
+silently swallowed instead of crashing anything visibly. This was
+happening in beta02 too - the "hang" symptom and the "no video but frames
+render fine" symptom were the exact same bug, just read from an
+incompletely-captured stack trace the first time.
+
+**Fix**: `MediaCodecHelper.initialize(this, "headless")` at the top of
+`PModeScreenServiceBase.doConnect()`, before constructing the decoder
+renderer.
+
+**Real lesson for this whole debugging arc**: when a `W Binder` warning
+shows a stack trace, grab the exception's own header line, not just the
+`at ...` frames - a truncated capture reads exactly like a "slow call"
+warning and looks nothing like the actual thrown exception underneath it.
+Second lesson: verify a "hang" hypothesis against actual liveness signals
+(frame counters, telemetry) before committing to a fix for it - beta03's
+fix was plausible-sounding and shipped fast, but a live device signal
+(frames still rendering) would have ruled it out immediately if checked
+at the time.
+
+All 4 betas installed directly onto the user's connected Quest 3 during
+this session via `adb install -r` (in addition to being published on
+GitHub) - the fastest turnaround loop this project has had: real user
+symptom → real device log → real fix → same-session reinstall → retest,
+repeated 3 times in under an hour.
+
 ## The drag-and-drop update path had a real bug — confirmed on the user's actual PC, 2026-09-16
 
 The "packaging simplified" plan above claimed the portable ZIP could just
