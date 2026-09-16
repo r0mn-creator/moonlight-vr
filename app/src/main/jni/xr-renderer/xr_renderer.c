@@ -363,6 +363,16 @@ typedef struct {
     float screenOverride;
 
     GLuint oesTexture;
+
+    // Virtual Sunshine PMode: one independent OES texture per screen, fed by
+    // its own background-process MediaCodec decoder (see
+    // com.limelight.pmode.PModeScreenServiceBase) - replaces the old design
+    // of one shared decoded frame column-cropped into N quads, which only
+    // ever showed one real monitor no matter how many quads it was cut into.
+    GLuint productivityOesTexture[PRODUCTIVITY_SCREEN_COUNT];
+    float productivityTexMatrix[PRODUCTIVITY_SCREEN_COUNT][16];
+    int productivityHasFrame[PRODUCTIVITY_SCREEN_COUNT];
+
     GLuint program;
     GLint texMatrixUniform;
     GLint disparityUniform;
@@ -1452,6 +1462,19 @@ static int initGl(XrCtx* ctx) {
     glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+    // One independent OES texture per PMode screen. Harmless to always
+    // create these even outside productivity mode - a handful of unused
+    // texture names cost nothing until something binds a SurfaceTexture to
+    // them, which only happens when XrRenderer actually enters PMode.
+    glGenTextures(PRODUCTIVITY_SCREEN_COUNT, ctx->productivityOesTexture);
+    for (int i = 0; i < PRODUCTIVITY_SCREEN_COUNT; i++) {
+        glBindTexture(GL_TEXTURE_EXTERNAL_OES, ctx->productivityOesTexture[i]);
+        glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    }
 
     glGenFramebuffers(1, &ctx->fbo);
 
@@ -3105,6 +3128,35 @@ Java_com_limelight_binding_video_XrRenderer_nativeGetTexId(JNIEnv* env, jobject 
     return (jint)ctx->oesTexture;
 }
 
+// One OES texture per PMode screen (see PModeScreenServiceBase for why each
+// screen needs its own independent texture rather than one shared frame).
+JNIEXPORT jint JNICALL
+Java_com_limelight_binding_video_XrRenderer_nativeGetProductivityTexId(JNIEnv* env, jobject thiz,
+                                                                       jlong handle, jint screenIndex) {
+    XrCtx* ctx = (XrCtx*)(intptr_t)handle;
+    if (ctx == NULL || screenIndex < 0 || screenIndex >= PRODUCTIVITY_SCREEN_COUNT) {
+        return 0;
+    }
+    return (jint)ctx->productivityOesTexture[screenIndex];
+}
+
+// Called once per screen per frame, only when that screen's SurfaceTexture
+// actually has a new frame (Java already called updateTexImage() and
+// getTransformMatrix() before this - SurfaceTexture itself has no native
+// equivalent, so the transform has to cross the JNI boundary as a plain
+// float array, same as the single-screen texMatrix already does).
+JNIEXPORT void JNICALL
+Java_com_limelight_binding_video_XrRenderer_nativeUpdateProductivityTexture(JNIEnv* env, jobject thiz,
+                                                                            jlong handle, jint screenIndex,
+                                                                            jfloatArray texMatrix) {
+    XrCtx* ctx = (XrCtx*)(intptr_t)handle;
+    if (ctx == NULL || screenIndex < 0 || screenIndex >= PRODUCTIVITY_SCREEN_COUNT) {
+        return;
+    }
+    (*env)->GetFloatArrayRegion(env, texMatrix, 0, 16, ctx->productivityTexMatrix[screenIndex]);
+    ctx->productivityHasFrame[screenIndex] = 1;
+}
+
 JNIEXPORT jobject JNICALL
 Java_com_limelight_binding_video_XrRenderer_nativeGetModelInput(JNIEnv* env, jobject thiz, jlong handle) {
     XrCtx* ctx = (XrCtx*)(intptr_t)handle;
@@ -4228,8 +4280,10 @@ static void renderVideoFrame(XrCtx* ctx, const float* texMatrix, float separatio
 
     // Capture frames do readbacks and file writes inside what would be the
     // query window, which both ruins the number and, on this driver, leaves a
-    // query that never becomes available. Skip timing them.
-    int timing = ctx->timerSupported && !ctx->captureRequested;
+    // query that never becomes available. Skip timing them. PMode's early
+    // return below never reaches the matching pfnEndQuery, so it must never
+    // start one either - an unmatched glBeginQuery breaks every later query.
+    int timing = ctx->timerSupported && !ctx->captureRequested && !ctx->productivityMode;
 
     if (timing && !ctx->timerPending[ctx->timerSlot]) {
         pfnBeginQuery(GL_TIME_ELAPSED_EXT, ctx->timerQueries[ctx->timerSlot]);
@@ -4261,6 +4315,55 @@ static void renderVideoFrame(XrCtx* ctx, const float* texMatrix, float separatio
 
     glUseProgram(ctx->program);
 
+    // The unwarped frame, drawn first so the real eye passes overwrite it and
+    // the submitted frame is unaffected. Readback and file writes stall the
+    // frame loop for a while, which is fine for a one off debug capture.
+    unsigned char* captureBuf = NULL;
+    size_t captureBytes = (size_t)ctx->videoWidth * ctx->videoHeight * 4;
+
+    if (ctx->productivityMode) {
+        // N independent screens, each its own OES texture fed by its own
+        // background-process decoder - not one shared frame column-cropped.
+        // No depth/occlusion/debug-capture paths here; PMode forces depth
+        // off and none of the debug capture tooling applies per-screen yet.
+        glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_2D, ctx->depthTextures[ctx->depthReadIndex]);
+        glActiveTexture(GL_TEXTURE2);
+        glBindTexture(GL_TEXTURE_2D, ctx->offsetTexture);
+        glUniform1f(ctx->occlusionUniform, 0.0f);
+        glUniform1f(ctx->convergenceUniform, ctx->convergence);
+        glUniform1f(ctx->dispTexelsUniform, 0.0f);
+        glUniform1f(ctx->lowResWidthUniform, (float)ctx->upsampleWidth);
+        glUniform1f(ctx->frameWidthUniform, (float)ctx->videoWidth);
+        glUniform1f(ctx->disparityUniform, 0.0f);
+        glUniform1f(ctx->eyeIndexUniform, 0.0f);
+        glUniform1f(ctx->barTestUniform, 0.0f);
+        glUniform3f(ctx->tintUniform, 1.0f, 1.0f, 1.0f);
+
+        glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 16, VERTEX_DATA);
+        glEnableVertexAttribArray(0);
+        glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 16, VERTEX_DATA + 2);
+        glEnableVertexAttribArray(1);
+
+        // ctx->videoWidth is the whole swapchain's width here (still set by
+        // Game.java's width*3 request), not any one screen's actual decoded
+        // resolution - each screen negotiates its own independently.
+        float colWidth = (float)ctx->videoWidth / PRODUCTIVITY_SCREEN_COUNT;
+        for (int i = 0; i < PRODUCTIVITY_SCREEN_COUNT; i++) {
+            glActiveTexture(GL_TEXTURE0);
+            glBindTexture(GL_TEXTURE_EXTERNAL_OES, ctx->productivityOesTexture[i]);
+            glUniformMatrix4fv(ctx->texMatrixUniform, 1, GL_FALSE, ctx->productivityTexMatrix[i]);
+            glViewport((int)(i * colWidth), 0, (int)colWidth, ctx->videoHeight);
+            glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        }
+
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        XrSwapchainImageReleaseInfo prodReleaseInfo = { XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO };
+        xrReleaseSwapchainImage(ctx->swapchain, &prodReleaseInfo);
+        ctx->everRendered = 1;
+        return;
+    }
+
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_EXTERNAL_OES, ctx->oesTexture);
     glActiveTexture(GL_TEXTURE1);
@@ -4287,11 +4390,6 @@ static void renderVideoFrame(XrCtx* ctx, const float* texMatrix, float separatio
     // with opposite disparity signs
     int eyes = ctx->stereoMode != DEPTH_MODE_OFF ? 2 : 1;
 
-    // The unwarped frame, drawn first so the real eye passes overwrite it and
-    // the submitted frame is unaffected. Readback and file writes stall the
-    // frame loop for a while, which is fine for a one off debug capture.
-    unsigned char* captureBuf = NULL;
-    size_t captureBytes = (size_t)ctx->videoWidth * ctx->videoHeight * 4;
     if (ctx->captureRequested) {
         captureBuf = malloc(captureBytes);
         if (captureBuf != NULL) {

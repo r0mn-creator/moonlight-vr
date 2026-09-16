@@ -60,11 +60,23 @@ public class XrRenderer implements SurfaceTexture.OnFrameAvailableListener {
     private static final float OVERLAY_TEXT_SIZE = 22.0f;
     private static final float OVERLAY_LINE_HEIGHT = 28.0f;
 
+    // Matches PRODUCTIVITY_SCREEN_COUNT in xr_renderer.c
+    private static final int PRODUCTIVITY_SCREEN_COUNT = 3;
+
     private long nativeCtx;
     private Thread renderThread;
     private Thread depthThread;
     private SurfaceTexture surfaceTexture;
     private Surface inputSurface;
+
+    // One independent OES texture/SurfaceTexture per PMode screen, each fed
+    // by its own background-process decoder (PModeScreenServiceBase) -
+    // replaces the old design where one shared decoded frame was
+    // column-cropped into N quads. Only populated when productivityMode.
+    private final SurfaceTexture[] productivitySurfaceTextures = new SurfaceTexture[PRODUCTIVITY_SCREEN_COUNT];
+    private final Surface[] productivityInputSurfaces = new Surface[PRODUCTIVITY_SCREEN_COUNT];
+    private final AtomicInteger[] productivityPendingFrames = new AtomicInteger[PRODUCTIVITY_SCREEN_COUNT];
+    private final float[][] productivityTexMatrix = new float[PRODUCTIVITY_SCREEN_COUNT][16];
 
     private final AtomicInteger pendingFrames = new AtomicInteger(0);
     private final float[] texMatrix = new float[16];
@@ -213,6 +225,8 @@ public class XrRenderer implements SurfaceTexture.OnFrameAvailableListener {
     private native void nativeUploadOverlay(long ctx, ByteBuffer pixels, int width, int height);
     private native float nativeGetWarpGpuMs(long ctx);
     private native void nativeDestroy(long ctx);
+    private native int nativeGetProductivityTexId(long ctx, int screenIndex);
+    private native void nativeUpdateProductivityTexture(long ctx, int screenIndex, float[] texMatrix);
 
     public boolean start(final Activity activity, final int videoWidth, final int videoHeight,
                          final PreferenceConfiguration prefs) {
@@ -249,6 +263,28 @@ public class XrRenderer implements SurfaceTexture.OnFrameAvailableListener {
                 surfaceTexture.setDefaultBufferSize(videoWidth, videoHeight);
                 surfaceTexture.setOnFrameAvailableListener(XrRenderer.this);
                 inputSurface = new Surface(surfaceTexture);
+
+                if (prefs.productivityMode) {
+                    // Each screen gets its own independent decoded resolution,
+                    // not a slice of the combined videoWidth (that number only
+                    // sizes the output swapchain - see xr_renderer.c).
+                    int screenWidth = videoWidth / PRODUCTIVITY_SCREEN_COUNT;
+                    for (int i = 0; i < PRODUCTIVITY_SCREEN_COUNT; i++) {
+                        final int screenIndex = i;
+                        SurfaceTexture st = new SurfaceTexture(
+                                nativeGetProductivityTexId(nativeCtx, screenIndex));
+                        st.setDefaultBufferSize(screenWidth, videoHeight);
+                        st.setOnFrameAvailableListener(new SurfaceTexture.OnFrameAvailableListener() {
+                            @Override
+                            public void onFrameAvailable(SurfaceTexture surfaceTexture) {
+                                productivityPendingFrames[screenIndex].incrementAndGet();
+                            }
+                        });
+                        productivitySurfaceTextures[screenIndex] = st;
+                        productivityInputSurfaces[screenIndex] = new Surface(st);
+                        productivityPendingFrames[screenIndex] = new AtomicInteger(0);
+                    }
+                }
 
                 if (prefs.vrDepthMode == DEPTH_MODE_MODEL) {
                     startDepthThread(activity);
@@ -447,6 +483,21 @@ public class XrRenderer implements SurfaceTexture.OnFrameAvailableListener {
             nativeUpdateInput(nativeCtx, distance, quadWidth, curvature, headLocked,
                     pointer, gaze, inputState);
             dispatchInput();
+
+            if (prefs.productivityMode) {
+                // Each screen only pulls a new frame from its own decoder
+                // when one is actually pending - matches how the single-
+                // screen path below only calls updateTexImage() on newFrame,
+                // so an idle screen just keeps showing its last frame.
+                for (int i = 0; i < PRODUCTIVITY_SCREEN_COUNT; i++) {
+                    if (productivityPendingFrames[i].getAndSet(0) > 0) {
+                        SurfaceTexture st = productivitySurfaceTextures[i];
+                        st.updateTexImage();
+                        st.getTransformMatrix(productivityTexMatrix[i]);
+                        nativeUpdateProductivityTexture(nativeCtx, i, productivityTexMatrix[i]);
+                    }
+                }
+            }
 
             boolean newFrame = pendingFrames.getAndSet(0) > 0;
             if (newFrame) {
@@ -1037,6 +1088,17 @@ public class XrRenderer implements SurfaceTexture.OnFrameAvailableListener {
 
     public Surface getInputSurface() {
         return inputSurface;
+    }
+
+    /**
+     * The Surface a PMode screen's decoder should target - only valid after
+     * start() has run with productivityMode set (they're created on the
+     * render thread once the EGL context is current, same as
+     * getInputSurface()'s single-screen counterpart). Game.java hands these
+     * to the bound PModeScreenService instances via AIDL, one per screen.
+     */
+    public Surface getProductivityInputSurface(int screenIndex) {
+        return productivityInputSurfaces[screenIndex];
     }
 
     // May run on any thread, the frame loop picks the counter up on its own
