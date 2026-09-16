@@ -9,7 +9,7 @@
   </a>
 </p>
 
-# Moonlight VR *(working name)*
+# Virtual Moonlight
 
 A fork of [Moonlight XR](https://github.com/Gilleece/moonlight-android-xr) by **Sean Gilleece** — itself a fork of
 [Moonlight for Android](https://github.com/moonlight-stream/moonlight-android) — which runs as a
@@ -22,10 +22,9 @@ Ko-fi link above.
 This fork adds a **Productivity mode** alongside the existing Gaming/remote-play experience:
 multi-monitor virtual desktops for real work (not just games) inside the headset, without losing
 what Moonlight already does well. Full design reasoning lives in
-[`docs/BRAINSTORM.md`](docs/BRAINSTORM.md). Status: early UI scaffolding, gearing toward Quest 3
-first. "Moonlight VR" is a working name — a rename is likely once the project has an identity
-distinct enough not to be confused with full local wireless VR rendering tools like Virtual
-Desktop, which this is not.
+[`docs/BRAINSTORM.md`](docs/BRAINSTORM.md). Status: early UI scaffolding and native rendering work,
+gearing toward Quest 3 first. If a companion fork of Apollo/Sunshine ever gets built for this
+project, it'll be named **Virtual Sunshine** to match.
 
 ## How the existing stereo/depth pipeline works
 
