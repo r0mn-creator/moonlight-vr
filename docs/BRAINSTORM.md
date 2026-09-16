@@ -1060,6 +1060,50 @@ concurrent hardware video decoder session limit hasn't been checked. 2-3
 simultaneous `MediaCodec` decode sessions is very likely fine on this
 hardware, but unverified.
 
+## First public release: beta01, 2026-09-16
+
+**Correction first: every on-device verification above used the wrong
+build flavor.** The project has two product flavors: `root` (`maxSdk 25` —
+for old *rooted* Android TV boxes lacking native mouse capture, applies a
+`ROOT_BUILD` native define) and `nonRoot` (`applicationId com.limelight`,
+the actual flavor for modern devices like Quest 3). All the earlier
+`assembleRootDebug`/on-device testing this session used `root` by
+accident. `adb install` doesn't enforce `maxSdkVersion` (that's a Play
+Store filter only), so it silently installed and ran anyway — but it was
+never the intended variant. The PMode code itself is flavor-agnostic (the
+root/nonRoot split only affects native input-capture code, unrelated to
+any of today's changes), so none of the earlier findings are invalidated,
+but from here on, **use `nonRoot`** for anything meant to represent what a
+real Quest 3 user gets.
+
+**Release signing set up for the first time.** No keystore existed before
+today. Generated `virtualmoonlight-release.jks` (repo root, gitignored) +
+`keystore.properties` (also gitignored) referenced from `app/build.gradle`
+so the `release` build type is properly signed rather than shipping
+unsigned or relying on the debug key. **This keystore is the one and only
+thing that lets beta02, beta03, etc. install as in-place updates over
+beta01 — losing it breaks that permanently. Back it up somewhere safe
+outside the repo.** `versionCode` bumped to 31403 (past 31402, an already-
+installed build from earlier work outside this session, so this beta
+installs as a real update rather than colliding). `versionName` is
+`"beta01"`.
+
+**Published**: tag `beta01`,
+https://github.com/r0mn-creator/moonlight-vr/releases/tag/beta01 — the
+signed `nonRoot` release APK, with plain step-by-step sideload instructions
+(USB debugging → `adb install` → pair like normal Moonlight) and a clear
+callout that multi-monitor Productivity mode needs a Virtual Sunshine host
+and has no interactive input yet. Verified on the connected Quest 3 before
+publishing: uninstalled the old differently-signed `com.limelight.unofficial`
+test install (signature mismatch, expected - a real user upgrading from
+nothing won't hit this), installed the new signed build fresh, launched
+with no crash, reached `PcView` normally.
+
+No CI/release-automation pipeline exists yet for this repo (unlike Virtual
+Sunshine's GitHub Actions workflow) - this release was built and signed
+locally. Worth revisiting if betas become frequent enough that manual
+builds get tedious.
+
 ## Native Quest 3 feel — haptics and spatial audio shipped
 
 Asked what "feels like a native Quest 3 app, built by a pro VR dev" actually
