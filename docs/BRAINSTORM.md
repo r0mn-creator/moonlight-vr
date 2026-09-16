@@ -385,6 +385,35 @@ whatever rotation it already had.
   pattern as the `productivityMode`/`productivityDepth` flags already
   threaded through the launch intent).
 
+## Real multi-monitor capture — bigger than a config toggle, decision paused
+
+Asked whether matching Virtual Desktop's "show all my PC displays" needs
+server-side modification. Checked rather than assumed: **Apollo's own
+maintainers have stated true single-instance multi-display support is a
+known, unimplemented gap** — "planned but the code written by Sunshine was
+a total mess and hasn't gotten enough time to be cleared out." So this
+isn't a config toggle away in Apollo as it exists today.
+
+**The current working (no-code-change) path is heavier than earlier
+turns assumed**: not "add 2 more app entries" in one Apollo config, but
+**running 3 separate Apollo instances** on the host (`sunshine.conf`,
+`sunshine_2.conf`, `sunshine_3.conf` — each its own process, port, log, and
+state file), each instance's Display Device Id pointed at one of the 3
+physical monitors. Our client would open 3 concurrent connections, one per
+instance/port, placing each stream on its own VR screen. Real host setup
+work, zero Apollo code changes.
+
+**The alternative — one Apollo instance auto-detecting and streaming all
+displays, matching Virtual Desktop's actual zero-config UX — doesn't exist
+anywhere in this ecosystem yet.** Building it means patching Apollo's own
+capture layer, a materially larger undertaking than this client fork, in a
+codebase we don't own.
+
+**Decision paused deliberately** (2026-09-16) — this is a big enough scope
+fork to sit with rather than decide immediately. Revisit before doing any
+more work that assumes one path or the other (e.g. the client-side "open N
+concurrent connections" work only makes sense for the 3-instances path).
+
 ## Native Quest 3 feel — haptics and spatial audio shipped
 
 Asked what "feels like a native Quest 3 app, built by a pro VR dev" actually
