@@ -2719,6 +2719,24 @@ static void writeInputPose(XrCtx* ctx, float* out) {
     out[IN_POSE + 8] = ctx->screenRadius;
 }
 
+// A short, light click rather than a buzz - this fires on every button
+// press/grab in both modes, so it needs to read as a tap, not an event you
+// have to wait out.
+static void fireHaptic(XrCtx* ctx, int hand) {
+    if (ctx->hapticAction == XR_NULL_HANDLE) {
+        return;
+    }
+    XrHapticVibration vibration = { XR_TYPE_HAPTIC_VIBRATION };
+    vibration.amplitude = 0.6f;
+    vibration.duration = 60000000; // 60ms, in nanoseconds
+    vibration.frequency = XR_FREQUENCY_UNSPECIFIED;
+
+    XrHapticActionInfo info = { XR_TYPE_HAPTIC_ACTION_INFO };
+    info.action = ctx->hapticAction;
+    info.subactionPath = ctx->handPaths[hand];
+    xrApplyHapticFeedback(ctx->session, &info, (const XrHapticBaseHeader*)&vibration);
+}
+
 // Move and resize both work off the handle the ray was over when the grip
 // closed. Gripping the picture itself does nothing, which keeps the panel from
 // being dragged by accident while pointing at something.
@@ -2757,6 +2775,7 @@ static void applyGrab(XrCtx* ctx, XrPosef* aims, const int* valid, int hand,
         }
         ctx->grabByTrigger = !byGrip;
 
+        fireHaptic(ctx, hand);
         ctx->grabHand = hand;
         ctx->grabAim = aims[hand];
         ctx->grabScreen = ctx->screenPose;
@@ -3406,30 +3425,15 @@ Java_com_limelight_binding_video_XrRenderer_nativeWaitBeginFrame(JNIEnv* env, jo
     return FRAME_RENDER;
 }
 
-// A short, light click rather than a buzz - this fires on every button press,
-// so it needs to read as a tap, not an event you have to wait out.
-static void fireHaptic(XrCtx* ctx, int hand) {
-    if (ctx->hapticAction == XR_NULL_HANDLE) {
-        return;
-    }
-    XrHapticVibration vibration = { XR_TYPE_HAPTIC_VIBRATION };
-    vibration.amplitude = 0.6f;
-    vibration.duration = 60000000; // 60ms, in nanoseconds
-    vibration.frequency = XR_FREQUENCY_UNSPECIFIED;
-
-    XrHapticActionInfo info = { XR_TYPE_HAPTIC_ACTION_INFO };
-    info.action = ctx->hapticAction;
-    info.subactionPath = ctx->handPaths[hand];
-    xrApplyHapticFeedback(ctx->session, &info, (const XrHapticBaseHeader*)&vibration);
-}
-
-// Where the desktop audio should feel like it's coming from: pan toward
-// whichever side the centre screen is on relative to where the head is
-// actually facing, quieter the further back the user leans. There's only
-// one audio stream for the whole desktop (Sunshine mixes it before it ever
-// reaches us), so this positions the whole mix at one point rather than
-// per-window - the centre screen is the honest choice for that point.
-static void updateProductivitySpatialAudio(XrCtx* ctx, float* out) {
+// Where the game/desktop audio should feel like it's coming from: pan toward
+// whichever side the screen is on relative to where the head is actually
+// facing, quieter the further back the user leans. Shared by both modes -
+// Gaming passes its one movable screenPose, Productivity passes the fixed
+// centre screen, since there's only one audio stream for the whole desktop
+// (Sunshine mixes it before it ever reaches us) so the centre screen is the
+// honest choice of anchor rather than attempting per-window audio.
+static void computeSpatialAudio(XrCtx* ctx, XrPosef screenPose, float referenceDistance,
+                                float* out) {
     XrSpaceLocation headLoc = { XR_TYPE_SPACE_LOCATION };
     const XrSpaceLocationFlags needed = XR_SPACE_LOCATION_POSITION_VALID_BIT
             | XR_SPACE_LOCATION_ORIENTATION_VALID_BIT;
@@ -3439,8 +3443,7 @@ static void updateProductivitySpatialAudio(XrCtx* ctx, float* out) {
         return;
     }
 
-    XrPosef anchor = productivityScreenPose((PRODUCTIVITY_SCREEN_COUNT - 1) / 2);
-    Vec3 anchorPos = { anchor.position.x, anchor.position.y, anchor.position.z };
+    Vec3 anchorPos = { screenPose.position.x, screenPose.position.y, screenPose.position.z };
     Vec3 headPos = { headLoc.pose.position.x, headLoc.pose.position.y, headLoc.pose.position.z };
     Vec3 toAnchor = vecSub(anchorPos, headPos);
 
@@ -3456,10 +3459,9 @@ static void updateProductivitySpatialAudio(XrCtx* ctx, float* out) {
     if (pan < -1.0f) pan = -1.0f;
     if (pan > 1.0f) pan = 1.0f;
 
-    // 1.0 at the default screen distance, falling off (not muting) further
-    // back. Once Phase 2's distance slider exists this starts meaning
-    // something more than "always the default."
-    float gain = PRODUCTIVITY_DISTANCE_M / distance;
+    // 1.0 at the reference distance (each mode's current screen distance),
+    // falling off, not muting, further back.
+    float gain = referenceDistance / distance;
     if (gain > 1.0f) gain = 1.0f;
     if (gain < 0.2f) gain = 0.2f;
 
@@ -3545,7 +3547,8 @@ Java_com_limelight_binding_video_XrRenderer_nativeUpdateInput(JNIEnv* env, jobje
     out[IN_AUDIO_GAIN] = 1.0f;
 
     if (ctx != NULL && ctx->productivityMode) {
-        updateProductivitySpatialAudio(ctx, out);
+        computeSpatialAudio(ctx, productivityScreenPose((PRODUCTIVITY_SCREEN_COUNT - 1) / 2),
+                           PRODUCTIVITY_DISTANCE_M, out);
         updateProductivityInput(ctx, pointerEnabled, out);
         (*env)->SetFloatArrayRegion(env, outArr, 0, IN_SLOTS, out);
         return;
@@ -3865,6 +3868,7 @@ Java_com_limelight_binding_video_XrRenderer_nativeUpdateInput(JNIEnv* env, jobje
     screenPose = ctx->screenPose;
     height = ctx->screenWidth * (float)ctx->videoHeight / (float)ctx->videoWidth;
     radius = ctx->screenRadius;
+    computeSpatialAudio(ctx, screenPose, ctx->lastDistance, out);
 
     // A handle stays lit while it is being dragged, however far the ray has
     // wandered from it in the meantime
@@ -3988,8 +3992,14 @@ Java_com_limelight_binding_video_XrRenderer_nativeUpdateInput(JNIEnv* env, jobje
     }
     // A press only counts while aimed at the screen, but a release always
     // does, so walking the pointer off the edge mid drag still lets go
+    int prevButtonsDown = ctx->buttonsDown;
     ctx->buttonsDown = (ctx->buttonsDown & mask) | (hit ? mask : 0);
     out[IN_BUTTONS] = (float)ctx->buttonsDown;
+    // A tick on whichever hand just clicked - only newly pressed buttons
+    // count, so holding one down doesn't buzz every frame
+    if ((~prevButtonsDown & ctx->buttonsDown) != 0 && hand >= 0 && hand < HAND_COUNT) {
+        fireHaptic(ctx, hand);
+    }
 
     XrVector2f stick = actionVec2(ctx, ctx->scrollAction, -1);
     if (hit && fabsf(stick.y) > SCROLL_DEADZONE) {
