@@ -411,13 +411,19 @@ along on the existing `nativeUpdateInput` channel (two new slots,
 `AndroidAudioRenderer` applies it as a balance control directly on the PCM
 buffer before `AudioTrack.write()`.
 
-**Both are Productivity-only, deliberately built to cost Gaming mode
-nothing** — not just a negligible effect. Native always emits neutral
-`(pan=0, gain=1)` outside `productivityMode`; the Java-side balance math
-treats `(0, 1)` as an exact identity (skips its processing loop entirely
-rather than multiplying every sample by 1.0). This is the same
-frozen-Gaming discipline as everything else this session — worth
-double-checking any future audio/haptics work preserves it too.
+**Correction, same day: both extended to Gaming mode too.** Initially built
+Productivity-only by default, matching the frozen-Gaming rule everywhere
+else this session — but haptics and spatial audio are basic VR platform
+features, not Productivity-specific extras, and the user called that out
+explicitly (the one case this session where Gaming was deliberately
+touched, per its own "unless I specifically tell you" exception). Haptics
+now also fire on grabbing a screen handle and on any newly-pressed mouse
+button in Gaming's existing single-screen interaction system.
+`computeSpatialAudio` was generalized to take an explicit screen pose and
+reference distance rather than hardcoding Productivity's centre screen, so
+Gaming calls it with its own movable `screenPose`. The Java-side identity-
+transform optimization (pan=0/gain=1 skips processing) needed no changes —
+it was already value-specific, not mode-specific.
 
 Shipped 2026-09-16. Compiles clean (Java + native); **not built into an APK
 or installed** — no device available to test against at the time, so this
