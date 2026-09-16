@@ -849,6 +849,127 @@ drag-and-drop update mechanism above depends on that layout matching an
 existing Apollo install, not on what the top-level folder or registry
 entry is called.
 
+## Client can't actually use PMode yet — moonlight-common-c is single-connection by design
+
+Asked whether Virtual Moonlight needs updates to use the Virtual Sunshine
+PMode work. Checked the current client code: `Game.java:249` still does
+`prefConfig.width *= 3;` — today's "Phase 1" multi-screen rendering opens
+**one** NvHTTP/RTSP connection, asks for a 3x-wide stream, and just crops
+the single resulting texture into 3 columns
+(`productivityScreenPose`/etc. in `xr_renderer.c`). That's the literal
+mechanism behind the "center screen has content, two sides are black" bug
+from earlier — a single Apollo capture session only ever contains one real
+monitor, no matter how wide the client asks for. PMode's actual design
+(N separate connections, each tagged `pmodeDisplay=<name>`, each with its
+own capture/encode pipeline server-side) needs a genuinely different client
+architecture, not a patch to the existing one.
+
+**Bigger finding while scoping that work: `moonlight-common-c` (the
+client's core streaming library, `app/src/main/jni/moonlight-core/
+moonlight-common-c`) only supports one connection per process, by explicit
+design, not by accident.**
+- `Limelight.h:532` (`LiStopConnection`) and the doc comment on
+  `LiInterruptConnection` state outright: *"it is not safe to start
+  another connection before the first `LiStartConnection()` call
+  returns."* A documented contract, not a gap.
+- `Connection.c`, `VideoStream.c`, and `AudioStream.c` each hold their
+  sockets, threads, decryption contexts, and decode queues as `static`
+  file-scope globals — every subsystem the library has.
+- This is much bigger than Apollo's `proc::proc` singleton: that was our
+  own fork's problem, in code we already own. This is baked into a
+  third-party C library nearly every Moonlight/Artemis client depends on.
+
+### Decision (2026-09-16): multi-process client, not a moonlight-common-c rewrite
+
+Presented three options: (a) run N Android processes, each with its own
+isolated moonlight-common-c instance, and composite N cross-process video
+surfaces into one VR scene; (b) keep one connection, add host-side
+display-switching, and treat "3 monitors" as "one live screen you can
+switch, not 3 simultaneous ones" — a real scope reduction; (c) rewrite
+moonlight-common-c itself to thread an explicit connection context through
+every subsystem — biggest and riskiest, in code we don't own. **Chose (a),
+multi-process.** The key property that makes it work: process-level
+globals are automatically per-process on Android/Linux, so N processes
+running the *same unmodified* moonlight-common-c gives N fully independent
+"instances" for free — zero changes needed to the third-party library. All
+the real engineering is in Android app architecture (Services, AIDL,
+cross-process `Surface` handoff), not inside fragile C networking code.
+
+**Why this is actually tractable, confirmed by reading the current
+renderer**: `xr_renderer.c` already uses OpenGL ES with an external OES
+texture (`GLES2/gl2ext.h`, `ctx->oesTexture`), and the existing single-
+connection path already does exactly the pattern the multi-process design
+needs, just once instead of N times — `XrRenderer.java:225-251`:
+`nativeGetTexId()` creates a GL texture → `new SurfaceTexture(texId)` →
+`new Surface(surfaceTexture)` → that `Surface` is handed to
+`MediaCodecDecoderRenderer`'s decoder. A `Surface` is `Parcelable` and can
+cross a Binder/AIDL boundary to a different process — that's the standard
+Android mechanism (used by `SurfaceView`, `VirtualDisplay`,
+`MediaProjection`) that makes "decoder in process B, GL texture consumed
+in process A" a well-trodden path, not a novel one.
+
+### Concrete plan
+
+1. **N background Services, one process each.** Declare lightweight bound
+   `Service`s in the manifest with `android:process=":pmode_screen1"` etc.
+   (no UI — the XR activity stays the single visible process). Each hosts
+   exactly one moonlight-common-c connection, driven by the *existing*,
+   unmodified `NvConnection`/`MoonBridge` Java wiring — running inside an
+   isolated process is what isolates its globals, not a code change.
+
+2. **AIDL interface per screen service.** `connect(Surface videoSurface,
+   String host, String pmodeDisplay, StreamConfig config, ICallback cb)`,
+   `disconnect()`, plus the mouse/keyboard subset of `MoonBridge` actually
+   needed for desktop use (no gamepad passthrough needed here). The
+   callback interface reports connection stage/termination/stats back to
+   the main process for the existing debug overlay.
+
+3. **Main process creates N `SurfaceTexture`+OES-texture pairs** (today's
+   single-texture setup, made into an array), and for each configured
+   display, binds the matching `:pmode_screenN` service and hands over its
+   `Surface` plus connection params via AIDL `connect()`.
+
+4. **Renderer**: replace column-cropping one swapchain with sampling N
+   independent OES textures, one per screen quad — each updated via its
+   own `SurfaceTexture.onFrameAvailable`/`updateTexImage()`, routed through
+   JNI per screen index instead of the single current call.
+
+5. **Input routing**: the existing ray/pointer hit-test already knows
+   which quad is being pointed at (`updateProductivityInput`); route mouse/
+   keyboard events to *that* screen's bound service via its own AIDL call
+   instead of the single global `MoonBridge.send*` today. Whichever screen
+   was last clicked "owns" keyboard focus, same as a real multi-monitor
+   desktop.
+
+6. **Audio: exactly one screen is the audio owner** (e.g. index 0, or
+   whichever was last focused) to avoid decoding and mixing N overlapping
+   desktop-audio streams. The other N-1 connections request audio off or
+   simply never wire their decoded audio to an `AudioTrack`.
+
+7. **Lifecycle**: bind all N services together on entering Productivity
+   mode, `disconnect()` + `unbindService()` all of them together on Exit
+   (same button, extended) — each service's `onDestroy()` should also
+   defensively call `LiStopConnection()` for its own process.
+
+8. **Discovery dependency on the server side (not yet built)**: the client
+   needs to learn the host's `pmode_displays` list (count + names) to know
+   how many services to spin up and what to tag each `pmodeDisplay` with.
+   Nothing currently exposes this — needs either a new NvHTTP endpoint or
+   folding it into an existing response (`/serverinfo`). Cross-cutting with
+   the still-not-started confighttp step (step 2) on the Virtual Sunshine
+   side. Hardcoded `PRODUCTIVITY_SCREEN_COUNT` stays as a fallback/default
+   until this exists.
+
+9. **Regression check**: Gaming mode keeps using the existing in-process
+   single connection completely unchanged — only Productivity mode routes
+   through the new N-service architecture. Confirm Gaming still launches/
+   streams exactly as before once this lands.
+
+**Not yet started — this is a plan, not code**, and a real unknown
+alongside it: Quest 3's Snapdragon XR2 Gen2 concurrent hardware video
+decoder session limit hasn't been checked. 2-3 simultaneous `MediaCodec`
+decode sessions is very likely fine on this hardware, but unverified.
+
 ## Native Quest 3 feel — haptics and spatial audio shipped
 
 Asked what "feels like a native Quest 3 app, built by a pro VR dev" actually
