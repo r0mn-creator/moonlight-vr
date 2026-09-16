@@ -324,6 +324,19 @@ the fix is a full in-VR arrangement UI:
     system layered on top of however many screens are actually being
     rendered.
 
+**Phase 1 shipped 2026-09-15, not yet verified on-device.** Added
+`ctx->productivityMode` to `XrCtx`, threaded from `PreferenceConfiguration`
+through `XrRenderer.nativeInit`. When set, `nativeEndFrame` submits 3 mono
+`XrCompositionLayerQuad`s (equal-width columns of the same swapchain texture,
+fixed shallow-arc default positions) **instead of** Gaming's single-screen/
+stereo layers — wrapped in an `if/else` so Gaming's existing code path is
+byte-for-byte untouched. No beam/handles/picker/background layer in this
+mode yet — visual-only, per the phasing below. `Game.java` requests 3x the
+normal stream width (naive equal-thirds) and force-disables depth mode for
+Productivity sessions regardless of the depth toggle, since per-screen depth
+isn't built. Compiles and installs; needs an actual device test connected to
+a real PC to confirm it renders correctly.
+
 **Phasing, to avoid building all of this at once**:
 - **Phase 1** (next, not started): get 3 flat screens rendering at all, in a
   fixed default wall arrangement (sensible constant curve/distance/height/
