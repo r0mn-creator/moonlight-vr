@@ -1,4 +1,13 @@
-# VR Moonlight fork — Gaming + Productivity modes (living doc)
+# Virtual Moonlight — Gaming + Productivity modes (living doc)
+
+**Named 2026-09-16: the app is called Virtual Moonlight.** ("Moonlight VR"
+was the working name throughout this doc's earlier sections — left as-is
+below rather than rewritten, since the reasoning still applies, just under
+the old name.) If a companion modified-Apollo host ever gets built, it's
+named **Virtual Sunshine** to match. Changed via the `app_label`/
+`app_label_root` resValues in `app/build.gradle` only — applicationId,
+package names, and component names are untouched, so this was a zero-risk
+display-name-only change.
 
 Status: **real repo started, 2026-09-15.** Public repo:
 https://github.com/r0mn-creator/moonlight-vr — cloned from the private
