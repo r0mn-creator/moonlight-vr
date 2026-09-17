@@ -151,7 +151,10 @@ public class XrRenderer implements SurfaceTexture.OnFrameAvailableListener {
     // not the resulting state (this class owns and echoes the real value
     // back via nativeSetDepthEffect, same shape as IN_KEYBOARD_TOGGLE)
     private static final int IN_DEPTH_TOGGLE = 29;
-    private static final int IN_SLOTS = 30;
+    // Glow on/off, next to the brightness slider - only meaningful (and
+    // only hit-tested natively) while that slider is open
+    private static final int IN_GLOW_TOGGLE = 30;
+    private static final int IN_SLOTS = 31;
     private static final int POSE_VALUES = 9;
     private final float[] inputState = new float[IN_SLOTS];
     private int heldButtons;
@@ -179,6 +182,13 @@ public class XrRenderer implements SurfaceTexture.OnFrameAvailableListener {
     // to a debug test pattern - those don't run the real inference thread,
     // so the top bar's toggle only starts/stops it when this is true.
     private boolean depthModelCapable = true;
+    // Live ambient-glow on/off - toggled from the icon next to the
+    // brightness slider, started from
+    // PreferenceConfiguration.VR_GLOW_ENABLED_PREF_STRING. Its icon is its
+    // own single small texture, not part of the topbar strip, since it
+    // isn't part of the fixed icon row.
+    private volatile boolean glowEnabled = true;
+    private final AtomicReference<ByteBuffer> pendingGlowToggleArt = new AtomicReference<>();
     // Matches OUTLINE_TEX in xr_renderer.c - size of one cell in the strip
     private static final int TOPBAR_CELL_TEX = 128;
     // Bleed margin for the background pill's feather - matches
@@ -237,6 +247,8 @@ public class XrRenderer implements SurfaceTexture.OnFrameAvailableListener {
     private native void nativeSetPassthroughLevel(long ctx, float level);
     private native void nativeSetCurvature(long ctx, float amount);
     private native void nativeSetDepthEffect(long ctx, boolean on);
+    private native void nativeSetGlowEnabled(long ctx, boolean on);
+    private native void nativeUploadGlowToggleArt(long ctx, ByteBuffer icon);
     private native void nativeUploadOverlay(long ctx, ByteBuffer pixels, int width, int height);
     private native float nativeGetWarpGpuMs(long ctx);
     private native void nativeDestroy(long ctx);
@@ -277,6 +289,10 @@ public class XrRenderer implements SurfaceTexture.OnFrameAvailableListener {
                         .getFloat(PreferenceConfiguration.VR_PASSTHROUGH_LEVEL_PREF_STRING, 1.0f));
                 nativeSetCurvature(nativeCtx, prefs.vrCurvature / 100.0f);
                 nativeSetDepthEffect(nativeCtx, depthEffectOn);
+                glowEnabled = PreferenceManager.getDefaultSharedPreferences(prefsContext)
+                        .getBoolean(PreferenceConfiguration.VR_GLOW_ENABLED_PREF_STRING, true);
+                pendingGlowToggleArt.set(toBuffer(buildGlowToggleArt()));
+                nativeSetGlowEnabled(nativeCtx, glowEnabled);
 
                 File captureDir = activity.getExternalFilesDir(null);
                 if (captureDir != null) {
@@ -577,6 +593,11 @@ public class XrRenderer implements SurfaceTexture.OnFrameAvailableListener {
                 nativeUploadTopBarArt(nativeCtx, topBarArt);
             }
 
+            ByteBuffer glowToggleArt = pendingGlowToggleArt.getAndSet(null);
+            if (glowToggleArt != null) {
+                nativeUploadGlowToggleArt(nativeCtx, glowToggleArt);
+            }
+
             nativeEndFrame(nativeCtx, newFrame, texMatrix, distance, quadWidth,
                     headLocked, separation, eyeSwap, true);
         }
@@ -638,6 +659,18 @@ public class XrRenderer implements SurfaceTexture.OnFrameAvailableListener {
         RectF dst = new RectF(cell.left + pad, cell.top + pad, cell.right - pad, cell.bottom - pad);
         canvas.drawBitmap(icon, null, dst, null);
         icon.recycle();
+    }
+
+    // Its own single-icon texture rather than a cell in the topbar strip,
+    // since it isn't part of the fixed icon row - appears/disappears with
+    // the brightness slider instead.
+    private Bitmap buildGlowToggleArt() {
+        Bitmap icon = Bitmap.createBitmap(TOPBAR_CELL_TEX, TOPBAR_CELL_TEX, Bitmap.Config.ARGB_8888);
+        Canvas canvas = new Canvas(icon);
+        canvas.drawColor(0, PorterDuff.Mode.CLEAR);
+        drawIcon(canvas, glowEnabled ? R.drawable.ic_topbar_glow_on : R.drawable.ic_topbar_glow_off,
+                new RectF(0.0f, 0.0f, TOPBAR_CELL_TEX, TOPBAR_CELL_TEX));
+        return icon;
     }
 
     private static RectF cellRect(int index) {
@@ -704,6 +737,10 @@ public class XrRenderer implements SurfaceTexture.OnFrameAvailableListener {
 
         if (inputState[IN_DEPTH_TOGGLE] != 0.0f) {
             toggleDepthEffect();
+        }
+
+        if (inputState[IN_GLOW_TOGGLE] != 0.0f) {
+            toggleGlowEnabled();
         }
 
         if (inputListener != null) {
@@ -811,6 +848,21 @@ public class XrRenderer implements SurfaceTexture.OnFrameAvailableListener {
         }
 
         pendingTopBarArt.set(toBuffer(buildTopBarArt()));
+    }
+
+    // Much simpler than toggleDepthEffect() - purely a render-side flag on
+    // the native side, no thread to start/stop, so this is the whole thing.
+    private void toggleGlowEnabled() {
+        glowEnabled = !glowEnabled;
+        nativeSetGlowEnabled(nativeCtx, glowEnabled);
+
+        if (prefsContext != null) {
+            PreferenceManager.getDefaultSharedPreferences(prefsContext).edit()
+                    .putBoolean(PreferenceConfiguration.VR_GLOW_ENABLED_PREF_STRING, glowEnabled)
+                    .apply();
+        }
+
+        pendingGlowToggleArt.set(toBuffer(buildGlowToggleArt()));
     }
 
     private final Object depthThreadOpLock = new Object();

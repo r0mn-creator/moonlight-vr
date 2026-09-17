@@ -130,7 +130,10 @@
 // the resulting state (Java owns and echoes the real value back via
 // nativeSetDepthEffect, same fire-and-forget shape as IN_KEYBOARD_TOGGLE)
 #define IN_DEPTH_TOGGLE 29
-#define IN_SLOTS    30
+// Glow on/off, next to the brightness slider - only meaningful (and only
+// hit-tested) while that slider is open
+#define IN_GLOW_TOGGLE 30
+#define IN_SLOTS    31
 
 // Grab thresholds for the grip, and the range a resize is allowed to reach
 #define SCREEN_MIN_WIDTH 0.8f
@@ -300,6 +303,12 @@
 // itself never needs more than one colour.
 #define DIM_TEX 4
 
+// Glow on/off, next to the brightness slider specifically (not curve's) -
+// appears and disappears with it, since it only means anything while the
+// room-darkening slider is open.
+#define GLOW_TOGGLE_SIZE_M 0.06f
+#define GLOW_TOGGLE_GAP_M 0.025f
+
 typedef struct { float x, y, z; } Vec3;
 
 // One euro filter: a low pass whose cutoff rises with speed, so a resting
@@ -381,6 +390,15 @@ typedef struct {
     GLuint glowTexture;
     GLuint glowFbo;
     float glowR, glowG, glowB;
+    // User on/off for the effect above - separate from whether it's even
+    // computed (computeGlowColor() is skipped entirely when this is off, so
+    // disabling it also saves the per-frame downscale cost, not just the
+    // visual). Icon appears next to the brightness slider specifically.
+    int glowEnabled;
+    XrSwapchain glowToggleSwapchain;
+    uint32_t glowToggleImageCount;
+    XrSwapchainImageOpenGLESKHR* glowToggleImages;
+    int glowToggleReady;
 
     // Temporal smoothing. The normalization range is smoothed separately from
     // the map itself: a single outlier pixel moving the min or max used to
@@ -2547,6 +2565,25 @@ static int createPointerSwapchain(XrCtx* ctx) {
         ctx->sliderThumbSwapchain = XR_NULL_HANDLE;
     }
 
+    // Glow on/off icon, next to the brightness slider
+    info.width = OUTLINE_TEX;
+    info.height = OUTLINE_TEX;
+    if (checkXr(xrCreateSwapchain(ctx->session, &info, &ctx->glowToggleSwapchain),
+                "create glow toggle swapchain")) {
+        xrEnumerateSwapchainImages(ctx->glowToggleSwapchain, 0, &ctx->glowToggleImageCount, NULL);
+        ctx->glowToggleImages = calloc(ctx->glowToggleImageCount,
+                                       sizeof(XrSwapchainImageOpenGLESKHR));
+        for (uint32_t i = 0; i < ctx->glowToggleImageCount; i++) {
+            ctx->glowToggleImages[i].type = XR_TYPE_SWAPCHAIN_IMAGE_OPENGL_ES_KHR;
+        }
+        xrEnumerateSwapchainImages(ctx->glowToggleSwapchain, ctx->glowToggleImageCount,
+                                   &ctx->glowToggleImageCount,
+                                   (XrSwapchainImageBaseHeader*)ctx->glowToggleImages);
+    }
+    else {
+        ctx->glowToggleSwapchain = XR_NULL_HANDLE;
+    }
+
     // Tiny - alpha is the only thing about this texture that ever matters
     info.width = DIM_TEX;
     info.height = DIM_TEX;
@@ -2921,6 +2958,20 @@ static XrPosef topBarSliderPose(XrCtx* ctx, int item) {
     return pose;
 }
 
+// To the right of the brightness slider's track - only ever positioned
+// relative to TOPBAR_BRIGHTNESS_INDEX's slider, since glow has no meaning
+// for the curve slider.
+static XrPosef topBarGlowTogglePose(XrCtx* ctx) {
+    XrPosef pose = topBarSliderPose(ctx, TOPBAR_BRIGHTNESS_INDEX);
+    Vec3 local = { SLIDER_TRACK_WIDTH_M * 0.5f + GLOW_TOGGLE_GAP_M + GLOW_TOGGLE_SIZE_M * 0.5f,
+                   0.0f, 0.0f };
+    Vec3 offset = quatRotate(pose.orientation, local);
+    pose.position.x += offset.x;
+    pose.position.y += offset.y;
+    pose.position.z += offset.z;
+    return pose;
+}
+
 // Handed back only when a grab ends, so preferences are written once per move
 // rather than every frame of it
 // Flushes anything pending back to Java once it settles, rather than on
@@ -3172,6 +3223,10 @@ static void destroyCtx(JNIEnv* env, XrCtx* ctx) {
         xrDestroySwapchain(ctx->sliderThumbSwapchain);
     }
     free(ctx->sliderThumbImages);
+    if (ctx->glowToggleSwapchain != XR_NULL_HANDLE) {
+        xrDestroySwapchain(ctx->glowToggleSwapchain);
+    }
+    free(ctx->glowToggleImages);
     if (ctx->dimSwapchain != XR_NULL_HANDLE) {
         xrDestroySwapchain(ctx->dimSwapchain);
     }
@@ -3258,6 +3313,9 @@ Java_com_limelight_binding_video_XrRenderer_nativeInit(JNIEnv* env, jobject thiz
     // 0 (TOPBAR_EXIT_INDEX) is a real item, so this can't rely on calloc's
     // zero-init like most flags here
     ctx->openSlider = TOPBAR_NO_SLIDER;
+    // Overwritten immediately by nativeSetGlowEnabled() once Java restores
+    // the saved value - true here only covers the frames before that lands.
+    ctx->glowEnabled = 1;
     // Overwritten immediately by nativeSetDepthEffect() once Java restores
     // the real saved value - true here only covers the handful of frames
     // before that lands.
@@ -3782,6 +3840,17 @@ static int updateTopBar(XrCtx* ctx, XrPosef* aims, const int* valid, float* out)
                 && u >= 0.0f && u <= 1.0f && v >= 0.0f && v <= 1.0f) {
             if (ctx->triggerEdge[h]) {
                 out[IN_DEPTH_TOGGLE] = 1.0f;
+                fireHaptic(ctx, h);
+            }
+            return 1;
+        }
+
+        if (ctx->openSlider == TOPBAR_BRIGHTNESS_INDEX
+                && screenProject(aims[h], topBarGlowTogglePose(ctx),
+                                 GLOW_TOGGLE_SIZE_M, GLOW_TOGGLE_SIZE_M, 0.0f, 0, &u, &v)
+                && u >= 0.0f && u <= 1.0f && v >= 0.0f && v <= 1.0f) {
+            if (ctx->triggerEdge[h]) {
+                out[IN_GLOW_TOGGLE] = 1.0f;
                 fireHaptic(ctx, h);
             }
             return 1;
@@ -4905,6 +4974,35 @@ Java_com_limelight_binding_video_XrRenderer_nativeSetDepthEffect(JNIEnv* env, jo
     ctx->depthEffectOn = on;
 }
 
+// User on/off for the ambient glow effect, restored at session start and
+// flipped by tapping the icon next to the brightness slider. Skips
+// computeGlowColor() entirely when off, not just the visual result.
+JNIEXPORT void JNICALL
+Java_com_limelight_binding_video_XrRenderer_nativeSetGlowEnabled(JNIEnv* env, jobject thiz,
+                                                                   jlong handle, jboolean on) {
+    XrCtx* ctx = (XrCtx*)(intptr_t)handle;
+    if (ctx == NULL) {
+        return;
+    }
+    ctx->glowEnabled = on;
+}
+
+// The glow toggle's own icon (on/off drawn in Java, swapped whenever the
+// state changes) - flipped top-down like every other Bitmap-sourced icon.
+JNIEXPORT void JNICALL
+Java_com_limelight_binding_video_XrRenderer_nativeUploadGlowToggleArt(JNIEnv* env, jobject thiz,
+                                                                       jlong handle, jobject icon) {
+    XrCtx* ctx = (XrCtx*)(intptr_t)handle;
+    if (ctx == NULL || icon == NULL) {
+        return;
+    }
+    const unsigned char* px = (*env)->GetDirectBufferAddress(env, icon);
+    if (px != NULL) {
+        ctx->glowToggleReady = uploadFlipped(ctx, ctx->glowToggleSwapchain, ctx->glowToggleImages,
+                                             px, OUTLINE_TEX, OUTLINE_TEX);
+    }
+}
+
 // Puts back a placement saved from a previous session. Marking the sliders as
 // already seen stops the first frame taking the screen straight back off it.
 JNIEXPORT void JNICALL
@@ -5024,7 +5122,7 @@ Java_com_limelight_binding_video_XrRenderer_nativeEndFrame(JNIEnv* env, jobject 
         // top bar's 3D-effect icon controls.
         renderVideoFrame(ctx, texMatrix, ctx->depthEffectOn ? separation : 0.0f);
 
-        if (ctx->passthroughLevel < 0.999f) {
+        if (ctx->passthroughLevel < 0.999f && ctx->glowEnabled) {
             computeGlowColor(ctx, texMatrix);
         }
 
@@ -5083,6 +5181,7 @@ Java_com_limelight_binding_video_XrRenderer_nativeEndFrame(JNIEnv* env, jobject 
     XrCompositionLayerQuad topBarLayer;
     XrCompositionLayerQuad sliderTrackLayer;
     XrCompositionLayerQuad sliderThumbLayer;
+    XrCompositionLayerQuad glowToggleLayer;
     XrCompositionLayerEquirect2KHR dimLayer;
     const XrCompositionLayerBaseHeader* layers[16];
     uint32_t layerCount = 0;
@@ -5101,9 +5200,11 @@ Java_com_limelight_binding_video_XrRenderer_nativeEndFrame(JNIEnv* env, jobject 
                 || ctx->passthroughLevel < 0.999f)) {
         unsigned char px[DIM_TEX * DIM_TEX * 4];
         unsigned char alpha = (unsigned char)((1.0f - ctx->passthroughLevel) * 255.0f + 0.5f);
-        unsigned char r = (unsigned char)(ctx->glowR * 255.0f + 0.5f);
-        unsigned char g = (unsigned char)(ctx->glowG * 255.0f + 0.5f);
-        unsigned char b = (unsigned char)(ctx->glowB * 255.0f + 0.5f);
+        // Falls back to flat black immediately when the user turns glow
+        // off, rather than freezing on whatever colour was last computed
+        unsigned char r = ctx->glowEnabled ? (unsigned char)(ctx->glowR * 255.0f + 0.5f) : 0;
+        unsigned char g = ctx->glowEnabled ? (unsigned char)(ctx->glowG * 255.0f + 0.5f) : 0;
+        unsigned char b = ctx->glowEnabled ? (unsigned char)(ctx->glowB * 255.0f + 0.5f) : 0;
         for (int i = 0; i < DIM_TEX * DIM_TEX; i++) {
             px[i * 4 + 0] = r;
             px[i * 4 + 1] = g;
@@ -5460,6 +5561,26 @@ Java_com_limelight_binding_video_XrRenderer_nativeEndFrame(JNIEnv* env, jobject 
             sliderThumbLayer.size.width = SLIDER_THUMB_SIZE_M;
             sliderThumbLayer.size.height = SLIDER_THUMB_SIZE_M;
             layers[layerCount++] = (const XrCompositionLayerBaseHeader*)&sliderThumbLayer;
+
+            // Glow on/off - only next to the brightness slider, never curve's
+            if (ctx->openSlider == TOPBAR_BRIGHTNESS_INDEX && ctx->glowToggleReady) {
+                XrPosef togglePose = topBarGlowTogglePose(ctx);
+                memset(&glowToggleLayer, 0, sizeof(glowToggleLayer));
+                glowToggleLayer.type = XR_TYPE_COMPOSITION_LAYER_QUAD;
+                glowToggleLayer.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
+                glowToggleLayer.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
+                glowToggleLayer.subImage.swapchain = ctx->glowToggleSwapchain;
+                glowToggleLayer.subImage.imageRect.offset.x = 0;
+                glowToggleLayer.subImage.imageRect.offset.y = 0;
+                glowToggleLayer.subImage.imageRect.extent.width = OUTLINE_TEX;
+                glowToggleLayer.subImage.imageRect.extent.height = OUTLINE_TEX;
+                glowToggleLayer.subImage.imageArrayIndex = 0;
+                glowToggleLayer.space = space;
+                glowToggleLayer.pose = togglePose;
+                glowToggleLayer.size.width = GLOW_TOGGLE_SIZE_M;
+                glowToggleLayer.size.height = GLOW_TOGGLE_SIZE_M;
+                layers[layerCount++] = (const XrCompositionLayerBaseHeader*)&glowToggleLayer;
+            }
         }
       }
     }

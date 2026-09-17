@@ -258,6 +258,22 @@ costs nothing extra. Re-uploads the tiny dim texture every frame while
 visible (video content changes every frame; the texture is 4x4, cheap
 regardless).
 
+**Follow-up same day: a dedicated on/off toggle, contextual to the
+brightness slider.** User: "we need a button to toggle on and off glow...
+This toggle appears and disappears with the slider that darkens the room."
+Not a topbar module (it isn't part of the fixed icon row) - its own small
+icon, positioned next to the brightness slider's track specifically
+(`topBarGlowTogglePose()`, built off `topBarSliderPose(ctx,
+TOPBAR_BRIGHTNESS_INDEX)` - never appears next to curve's slider, since
+glow has no meaning there), only hit-tested while that slider is open.
+Turning it off skips `computeGlowColor()`'s per-frame downscale entirely
+(not just the visual result) and the dim sphere falls back to flat black
+immediately rather than freezing on a stale colour. Persisted
+(`vr_glow_enabled`, on by default), same restore/persist shape as the
+other toggles. Icon is user-supplied art with two states - a glowing
+white outline for on, a plain grey outline for off - recreated once after
+the first version's blur wasn't pronounced enough to read clearly.
+
 **Next evolution (discussed, not started)**: true room-scale glow, where
 light would bounce off the user's *actual* walls using Quest's scanned
 room geometry rather than a generic surrounding sphere. Researched what

@@ -71,6 +71,9 @@ public class PreferenceConfiguration {
     // Nor is this: the top bar's brightness slider, left wherever it was
     // dragged to. 1.0 = full passthrough (default), 0.0 = full black.
     public static final String VR_PASSTHROUGH_LEVEL_PREF_STRING = "vr_passthrough_level";
+    // Nor is this: on/off for the ambient glow effect, toggled from the
+    // icon next to the brightness slider. On by default.
+    public static final String VR_GLOW_ENABLED_PREF_STRING = "vr_glow_enabled";
     private static final String VR_SEPARATION_PREF_STRING = "seekbar_vr_separation";
     private static final String VR_DEPTH_DEBUG_PREF_STRING = "checkbox_vr_depth_debug";
     private static final String VR_INFERENCE_CADENCE_PREF_STRING = "seekbar_vr_inference_cadence";
