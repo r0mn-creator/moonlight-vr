@@ -57,13 +57,13 @@ public class PreferenceConfiguration {
     private static final String VR_CURVATURE_PREF_STRING = "seekbar_vr_curvature";
     private static final String VR_DEPTH_SOURCE_PREF_STRING = "list_vr_depth_source";
     private static final String VR_EYE_SWAP_PREF_STRING = "checkbox_vr_eye_swap";
-    public static final String VR_PASSTHROUGH_PREF_STRING = "checkbox_vr_passthrough";
     private static final String VR_POINTER_PREF_STRING = "checkbox_vr_pointer";
     private static final String VR_GAZE_PREF_STRING = "checkbox_vr_gaze";
     // Not a setting, this is where a screen moved with the controllers is kept
     public static final String VR_SCREEN_POSE_PREF_STRING = "vr_screen_pose";
-    // Nor is this: the cell the environment grid was last left on
-    public static final String VR_ENVIRONMENT_PREF_STRING = "vr_environment";
+    // Nor is this: the top bar's brightness slider, left wherever it was
+    // dragged to. 1.0 = full passthrough (default), 0.0 = full black.
+    public static final String VR_PASSTHROUGH_LEVEL_PREF_STRING = "vr_passthrough_level";
     private static final String VR_SEPARATION_PREF_STRING = "seekbar_vr_separation";
     private static final String VR_DEPTH_DEBUG_PREF_STRING = "checkbox_vr_depth_debug";
     private static final String VR_INFERENCE_CADENCE_PREF_STRING = "seekbar_vr_inference_cadence";
@@ -124,7 +124,6 @@ public class PreferenceConfiguration {
     // On by default for new installs; the checkbox is sticky after that —
     // this is a stored preference, so once a user changes it, it stays
     // changed until they touch it again.
-    private static final boolean DEFAULT_VR_PASSTHROUGH = true;
     private static final boolean DEFAULT_VR_GAZE = true;
     private static final boolean DEFAULT_VR_POINTER = true;
     // Tenths of a percent of frame width. 5 measured comfortable on device and
@@ -199,7 +198,6 @@ public class PreferenceConfiguration {
     // Tenths of a percent of frame width
     public int vrStereoSeparation;
     public boolean vrDepthDebug;
-    public boolean vrPassthrough;
     public boolean vrPointer;
     public boolean vrGaze;
     // Run the depth model on every Nth video frame
@@ -688,7 +686,6 @@ public class PreferenceConfiguration {
             config.vrDepthMode = 0;
         }
         config.vrEyeSwap = prefs.getBoolean(VR_EYE_SWAP_PREF_STRING, DEFAULT_VR_EYE_SWAP);
-        config.vrPassthrough = prefs.getBoolean(VR_PASSTHROUGH_PREF_STRING, DEFAULT_VR_PASSTHROUGH);
         config.vrPointer = prefs.getBoolean(VR_POINTER_PREF_STRING, DEFAULT_VR_POINTER);
         config.vrGaze = prefs.getBoolean(VR_GAZE_PREF_STRING, DEFAULT_VR_GAZE);
         config.vrStereoSeparation = prefs.getInt(VR_SEPARATION_PREF_STRING, DEFAULT_VR_SEPARATION);

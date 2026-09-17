@@ -4,29 +4,24 @@ import android.app.Activity;
 import android.content.Context;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
-import android.graphics.BitmapShader;
+import android.graphics.BlurMaskFilter;
 import android.graphics.Canvas;
 import android.graphics.Color;
-import android.graphics.Matrix;
 import android.graphics.Paint;
-import android.graphics.Path;
 import android.graphics.PorterDuff;
 import android.graphics.RectF;
-import android.graphics.Shader;
 import android.graphics.SurfaceTexture;
 import android.graphics.Typeface;
 import android.preference.PreferenceManager;
 import android.view.Surface;
 
 import com.limelight.LimeLog;
+import com.limelight.R;
 import com.limelight.preferences.PreferenceConfiguration;
 
 import java.io.File;
-import java.io.IOException;
-import java.io.InputStream;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
-import java.util.Arrays;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -126,9 +121,11 @@ public class XrRenderer implements SurfaceTexture.OnFrameAvailableListener {
     private static final int IN_BUTTONS = 3;
     private static final int IN_SCROLL = 4;
     private static final int IN_POSE_DIRTY = 6;
+    // Passthrough brightness slider, both modes - only sent when a drag just
+    // ended (IN_PASSTHROUGH_DIRTY), same one-shot pattern as IN_POSE_DIRTY.
+    private static final int IN_PASSTHROUGH_LEVEL = 7;
     private static final int IN_POSE = 8;
-    private static final int IN_PICKER_PICK = 17;
-    // Productivity mode's top menu bar exit button, pressed this frame
+    // Top menu bar exit button, pressed this frame - shared by both modes
     private static final int IN_EXIT_PRESSED = 18;
     // Spatial audio: -1..1 left/right balance and 0..1 distance gain
     private static final int IN_AUDIO_PAN = 19;
@@ -140,6 +137,9 @@ public class XrRenderer implements SurfaceTexture.OnFrameAvailableListener {
     private static final int IN_PMODE_U = 23;
     private static final int IN_PMODE_V = 24;
     private static final int IN_PMODE_BUTTONS = 25;
+    // Reuses slot 17 (the environment-picker's old pick slot, retired with
+    // it) - see IN_PASSTHROUGH_LEVEL above.
+    private static final int IN_PASSTHROUGH_DIRTY = 17;
     private static final int IN_SLOTS = 26;
     private static final int POSE_VALUES = 9;
     private final float[] inputState = new float[IN_SLOTS];
@@ -149,43 +149,19 @@ public class XrRenderer implements SurfaceTexture.OnFrameAvailableListener {
     private InputListener inputListener;
     private Context prefsContext;
 
-    // The 360 photo shown behind the screen. Decoded off the frame loop and
-    // picked up whenever it is ready, so a slow decode cannot delay the first
-    // frame and hang the shell on its loading screen.
-    private final AtomicReference<ByteBuffer> pendingBackground = new AtomicReference<>();
-    // Productivity mode's top menu bar. Phase 1 has just the exit button;
-    // built the same way as the env button below so more modules (curve,
-    // distance, height, spacing) can follow the same pattern later.
-    private final AtomicReference<ByteBuffer> pendingProductivityMenu = new AtomicReference<>();
-    private volatile int backgroundWidth;
-    private volatile int backgroundHeight;
-
-    // Environment picker, a grid of thumbnails reachable from inside the
-    // session. The first two cells are passthrough and an empty black room,
-    // the rest are the photos in the assets folder, in name order. Must match
-    // the PICKER_ constants in xr_renderer.c.
-    private static final String ENVIRONMENT_DIR = "environments";
-    private static final int PICKER_COLS = 3;
-    private static final int PICKER_ROWS = 2;
-    private static final int PICKER_CELLS = PICKER_COLS * PICKER_ROWS;
-    private static final int PICKER_TEX_W = 768;
-    private static final int PICKER_TEX_H = 512;
-    private static final int ENV_BUTTON_TEX = 128;
-    private static final int CELL_PASSTHROUGH = 0;
-    private static final int CELL_VOID = 1;
-    private static final int CELL_FIRST_PHOTO = 2;
-    private static final int MAX_PHOTOS = PICKER_CELLS - CELL_FIRST_PHOTO;
-    private final AtomicReference<ByteBuffer> pendingPickerArt = new AtomicReference<>();
-    private final AtomicReference<ByteBuffer> pendingEnvButton = new AtomicReference<>();
-    private String[] environmentFiles = new String[0];
-    private volatile int environmentChoice = CELL_VOID;
-    private volatile boolean passthroughOn;
-    // Which photo is in the background swapchain, so switching back to one
-    // already loaded costs nothing and the old one stays up during a decode
-    private volatile int loadedPhoto = -1;
-    private volatile int pendingPhoto = -1;
-    private volatile boolean backgroundArrived;
-    private final AtomicInteger photoRequest = new AtomicInteger();
+    // Top menu bar: exit + brightness, one shared module for both modes (see
+    // topBarPose() natively - the only difference between them is which
+    // screen(s) it floats above). One bitmap, one cell per item, built once
+    // and uploaded whole.
+    private final AtomicReference<ByteBuffer> pendingTopBarArt = new AtomicReference<>();
+    private static final int TOPBAR_ITEM_COUNT = 2;
+    private static final int TOPBAR_EXIT_INDEX = 0;
+    private static final int TOPBAR_BRIGHTNESS_INDEX = 1;
+    // Matches OUTLINE_TEX in xr_renderer.c - size of one cell in the strip
+    private static final int TOPBAR_CELL_TEX = 128;
+    // Bleed margin for the background pill's feather - matches
+    // TOPBAR_TEX_MARGIN natively, which sizes the swapchain/quad to match
+    private static final int TOPBAR_TEX_MARGIN = 40;
 
     /**
      * Pointer events out of the VR session. Called on the frame loop thread.
@@ -232,9 +208,8 @@ public class XrRenderer implements SurfaceTexture.OnFrameAvailableListener {
                                           boolean pointerEnabled, boolean gazeEnabled,
                                           float[] out);
     private native void nativeSetScreenPose(long ctx, float[] pose);
-    private native void nativeUploadBackground(long ctx, ByteBuffer pixels, int width, int height);
-    private native void nativeUploadPicker(long ctx, ByteBuffer grid, ByteBuffer button);
-    private native void nativeSetEnvironment(long ctx, int choice, boolean backgroundOn);
+    private native void nativeUploadTopBarArt(long ctx, ByteBuffer strip);
+    private native void nativeSetPassthroughLevel(long ctx, float level);
     private native void nativeUploadOverlay(long ctx, ByteBuffer pixels, int width, int height);
     private native float nativeGetWarpGpuMs(long ctx);
     private native void nativeDestroy(long ctx);
@@ -259,11 +234,10 @@ public class XrRenderer implements SurfaceTexture.OnFrameAvailableListener {
 
                 prefsContext = activity.getApplicationContext();
                 restoreScreenPose();
-                startEnvironment(prefs);
-
-                if (prefs.productivityMode) {
-                    pendingProductivityMenu.set(toBuffer(buildExitButton()));
-                }
+                pendingTopBarArt.set(toBuffer(buildTopBarArt()));
+                nativeSetPassthroughLevel(nativeCtx, PreferenceManager
+                        .getDefaultSharedPreferences(prefsContext)
+                        .getFloat(PreferenceConfiguration.VR_PASSTHROUGH_LEVEL_PREF_STRING, 1.0f));
 
                 File captureDir = activity.getExternalFilesDir(null);
                 if (captureDir != null) {
@@ -552,307 +526,74 @@ public class XrRenderer implements SurfaceTexture.OnFrameAvailableListener {
                 nativeUploadOverlay(nativeCtx, overlay, OVERLAY_WIDTH, OVERLAY_HEIGHT);
             }
 
-            ByteBuffer grid = pendingPickerArt.getAndSet(null);
-            ByteBuffer button = pendingEnvButton.getAndSet(null);
-            if (grid != null || button != null) {
-                nativeUploadPicker(nativeCtx, grid, button);
-            }
-
-            ByteBuffer exitIcon = pendingProductivityMenu.getAndSet(null);
-            if (exitIcon != null) {
-                // Reuses the env-button upload path (same texture, same size,
-                // mutually exclusive with Gaming's own use of it)
-                nativeUploadPicker(nativeCtx, null, exitIcon);
-            }
-
-            ByteBuffer background = pendingBackground.getAndSet(null);
-            if (background != null) {
-                nativeUploadBackground(nativeCtx, background, backgroundWidth, backgroundHeight);
-                loadedPhoto = pendingPhoto;
-                backgroundArrived = true;
-                // Only now is there something to show, so this is where a
-                // freshly picked environment actually comes up
-                nativeSetEnvironment(nativeCtx, environmentChoice, backgroundVisible());
+            ByteBuffer topBarArt = pendingTopBarArt.getAndSet(null);
+            if (topBarArt != null) {
+                nativeUploadTopBarArt(nativeCtx, topBarArt);
             }
 
             nativeEndFrame(nativeCtx, newFrame, texMatrix, distance, quadWidth, curvature,
-                    headLocked, separation, eyeSwap, passthroughOn);
+                    headLocked, separation, eyeSwap, true);
         }
     }
 
     /**
-     * Settles on a starting environment, then hands the slow half to another
-     * thread: a 4096x2048 photo takes long enough to decode that doing it here
-     * would hold up the first frame and hang the shell on its loading screen.
+     * The top bar's icon strip: one TOPBAR_CELL_TEX-wide cell per item, drawn
+     * once and uploaded whole. Shared by both modes - see topBarPose() and
+     * updateTopBar() natively, which only differ in which screen(s) the bar
+     * floats above.
      */
-    private void startEnvironment(PreferenceConfiguration prefs) {
-        try {
-            String[] found = prefsContext.getAssets().list(ENVIRONMENT_DIR);
-            if (found != null) {
-                Arrays.sort(found);
-                environmentFiles = Arrays.copyOf(found, Math.min(found.length, MAX_PHOTOS));
-            }
-        } catch (IOException e) {
-            LimeLog.warning("No environments: " + e);
-        }
+    private Bitmap buildTopBarArt() {
+        int iconAreaW = TOPBAR_CELL_TEX * TOPBAR_ITEM_COUNT;
+        int iconAreaH = TOPBAR_CELL_TEX;
+        Bitmap strip = Bitmap.createBitmap(iconAreaW + TOPBAR_TEX_MARGIN * 2,
+                                           iconAreaH + TOPBAR_TEX_MARGIN * 2,
+                                           Bitmap.Config.ARGB_8888);
+        Canvas canvas = new Canvas(strip);
+        canvas.drawColor(0, PorterDuff.Mode.CLEAR);
 
-        int cell = PreferenceManager.getDefaultSharedPreferences(prefsContext)
-                .getInt(PreferenceConfiguration.VR_ENVIRONMENT_PREF_STRING, -1);
-        if (cell < 0 || cell >= CELL_FIRST_PHOTO + environmentFiles.length) {
-            // Never picked one, so the passthrough checkbox decides. Anyone who
-            // left it off gets a room rather than a void.
-            cell = prefs.vrPassthrough ? CELL_PASSTHROUGH
-                    : (environmentFiles.length > 0 ? CELL_FIRST_PHOTO : CELL_VOID);
-        }
-        environmentChoice = cell;
-        passthroughOn = cell == CELL_PASSTHROUGH;
-        nativeSetEnvironment(nativeCtx, cell, false);
+        // A soft, mostly-see-through pill so the icons stay legible against a
+        // bright wall. Sized to the icon area itself; the blur is what
+        // carries it out into the margin the bitmap was padded with above.
+        RectF pillArea = new RectF(TOPBAR_TEX_MARGIN, TOPBAR_TEX_MARGIN,
+                                   TOPBAR_TEX_MARGIN + iconAreaW, TOPBAR_TEX_MARGIN + iconAreaH);
+        drawTopBarBackground(canvas, pillArea);
 
-        final int startPhoto = cell - CELL_FIRST_PHOTO;
-        Thread loader = new Thread() {
-            @Override
-            public void run() {
-                buildPickerArt();
-                if (startPhoto >= 0) {
-                    decodePhoto(startPhoto);
-                }
-            }
-        };
-        loader.setName("Video - XR Environment");
-        loader.start();
+        // Both icons are pre-made assets (exit: a plain white glyph; brightness:
+        // a two-tone glyph depicting a screen occluding the room behind it, for
+        // the passthrough slider) rather than drawn here - see
+        // res/drawable-nodpi/ic_topbar_*.png.
+        drawIcon(canvas, R.drawable.ic_topbar_exit, cellRect(TOPBAR_EXIT_INDEX));
+        drawIcon(canvas, R.drawable.ic_topbar_brightness, cellRect(TOPBAR_BRIGHTNESS_INDEX));
+
+        return strip;
     }
 
-    private boolean backgroundVisible() {
-        return environmentChoice >= CELL_FIRST_PHOTO && backgroundArrived;
+    // Dark and nearly transparent on purpose - just enough to separate the
+    // icons from whatever is behind them, not a solid panel.
+    private static void drawTopBarBackground(Canvas canvas, RectF area) {
+        Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        paint.setColor(0x50000000);
+        paint.setMaskFilter(new BlurMaskFilter(TOPBAR_TEX_MARGIN * 0.45f, BlurMaskFilter.Blur.NORMAL));
+        float radius = area.height() * 0.5f;
+        canvas.drawRoundRect(area, radius, radius, paint);
     }
 
-    /**
-     * A cell was picked in the grid. Switching between two photos keeps the
-     * old one up until the new one has been decoded, so the room does not
-     * blink to black on the way.
-     */
-    private void chooseEnvironment(int cell) {
-        if (cell < 0 || cell >= CELL_FIRST_PHOTO + environmentFiles.length) {
+    private void drawIcon(Canvas canvas, int drawableRes, RectF cell) {
+        Bitmap icon = BitmapFactory.decodeResource(prefsContext.getResources(), drawableRes);
+        if (icon == null) {
             return;
         }
-        environmentChoice = cell;
-        passthroughOn = cell == CELL_PASSTHROUGH;
-
-        final int photo = cell - CELL_FIRST_PHOTO;
-        if (photo >= 0 && photo != loadedPhoto) {
-            Thread loader = new Thread() {
-                @Override
-                public void run() {
-                    decodePhoto(photo);
-                }
-            };
-            loader.setName("Video - XR Environment");
-            loader.start();
-        }
-        nativeSetEnvironment(nativeCtx, cell, backgroundVisible());
-
-        // The grid is a second way to reach the passthrough switch, so the
-        // setting follows it rather than disagreeing with what is on screen
-        PreferenceManager.getDefaultSharedPreferences(prefsContext).edit()
-                .putInt(PreferenceConfiguration.VR_ENVIRONMENT_PREF_STRING, cell)
-                .putBoolean(PreferenceConfiguration.VR_PASSTHROUGH_PREF_STRING, passthroughOn)
-                .apply();
+        // A little inset so the glyph doesn't touch the cell's own edges
+        float pad = TOPBAR_CELL_TEX * 0.12f;
+        RectF dst = new RectF(cell.left + pad, cell.top + pad, cell.right - pad, cell.bottom - pad);
+        canvas.drawBitmap(icon, null, dst, null);
+        icon.recycle();
     }
 
-    private void decodePhoto(int photo) {
-        if (photo < 0 || photo >= environmentFiles.length) {
-            return;
-        }
-        // Picking about quickly can leave more than one of these running, and
-        // only the last one asked for should reach the swapchain
-        int ticket = photoRequest.incrementAndGet();
-
-        InputStream in = null;
-        try {
-            in = prefsContext.getAssets().open(ENVIRONMENT_DIR + "/" + environmentFiles[photo]);
-            Bitmap bitmap = BitmapFactory.decodeStream(in);
-            if (bitmap == null || photoRequest.get() != ticket) {
-                return;
-            }
-
-            ByteBuffer pixels = ByteBuffer.allocateDirect(
-                    bitmap.getWidth() * bitmap.getHeight() * 4);
-            bitmap.copyPixelsToBuffer(pixels);
-            pixels.rewind();
-
-            backgroundWidth = bitmap.getWidth();
-            backgroundHeight = bitmap.getHeight();
-            bitmap.recycle();
-            pendingPhoto = photo;
-            pendingBackground.set(pixels);
-        } catch (IOException | OutOfMemoryError e) {
-            LimeLog.warning("Environment " + environmentFiles[photo] + " failed: " + e);
-        } finally {
-            closeQuietly(in);
-        }
-    }
-
-    /**
-     * Draws the grid and the button that opens it. Java is the only place
-     * Android will lay out text, so the labels have to be baked into the
-     * texture here rather than drawn in the shader.
-     */
-    private void buildPickerArt() {
-        final float cellW = PICKER_TEX_W / (float)PICKER_COLS;
-        final float cellH = PICKER_TEX_H / (float)PICKER_ROWS;
-        final float pad = 7.0f;
-        // Matches the radius of the hover ring drawn over it, which is a
-        // fraction of the cell rather than a pixel count
-        final float radius = cellW * 0.125f;
-
-        Bitmap grid = Bitmap.createBitmap(PICKER_TEX_W, PICKER_TEX_H, Bitmap.Config.ARGB_8888);
-        Canvas canvas = new Canvas(grid);
-        Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
-
-        canvas.drawColor(0, PorterDuff.Mode.CLEAR);
-        paint.setColor(0xE0141416);
-        canvas.drawRoundRect(new RectF(1.0f, 1.0f, PICKER_TEX_W - 1.0f, PICKER_TEX_H - 1.0f),
-                radius * 0.6f, radius * 0.6f, paint);
-
-        Paint label = new Paint(Paint.ANTI_ALIAS_FLAG);
-        label.setColor(Color.WHITE);
-        label.setTextSize(21.0f);
-        label.setTextAlign(Paint.Align.CENTER);
-
-        for (int cell = 0; cell < PICKER_CELLS; cell++) {
-            RectF tile = new RectF(
-                    (cell % PICKER_COLS) * cellW + pad,
-                    (cell / PICKER_COLS) * cellH + pad,
-                    (cell % PICKER_COLS + 1) * cellW - pad,
-                    (cell / PICKER_COLS + 1) * cellH - pad);
-
-            String name;
-            Bitmap thumb = null;
-            if (cell == CELL_PASSTHROUGH) {
-                name = "Passthrough";
-                paint.setColor(0xFF2A3540);
-            }
-            else if (cell == CELL_VOID) {
-                name = "Black void";
-                paint.setColor(0xFF090909);
-            }
-            else if (cell - CELL_FIRST_PHOTO < environmentFiles.length) {
-                name = labelFor(environmentFiles[cell - CELL_FIRST_PHOTO]);
-                thumb = decodeThumb(environmentFiles[cell - CELL_FIRST_PHOTO], (int)tile.height());
-                paint.setColor(0xFF1E1E20);
-            }
-            else {
-                continue;
-            }
-
-            if (thumb != null) {
-                // Scaled to cover and centred, so the middle of the panorama
-                // becomes the preview rather than a squashed whole sphere
-                BitmapShader shader = new BitmapShader(thumb, Shader.TileMode.CLAMP,
-                                                       Shader.TileMode.CLAMP);
-                float scale = Math.max(tile.width() / thumb.getWidth(),
-                                       tile.height() / thumb.getHeight());
-                Matrix m = new Matrix();
-                m.setScale(scale, scale);
-                m.postTranslate(tile.centerX() - thumb.getWidth() * scale * 0.5f,
-                                tile.centerY() - thumb.getHeight() * scale * 0.5f);
-                shader.setLocalMatrix(m);
-                paint.setShader(shader);
-            }
-            paint.setStyle(Paint.Style.FILL);
-            canvas.drawRoundRect(tile, radius, radius, paint);
-            paint.setShader(null);
-            if (thumb != null) {
-                thumb.recycle();
-            }
-
-            // Dark band under the label, clipped to the bottom of the tile so
-            // it keeps the rounded corners it sits in
-            canvas.save();
-            canvas.clipRect(tile.left, tile.bottom - 44.0f, tile.right, tile.bottom);
-            paint.setColor(0xC0000000);
-            canvas.drawRoundRect(tile, radius, radius, paint);
-            canvas.restore();
-
-            paint.setStyle(Paint.Style.STROKE);
-            paint.setStrokeWidth(2.0f);
-            paint.setColor(0x50FFFFFF);
-            canvas.drawRoundRect(tile, radius, radius, paint);
-            paint.setStyle(Paint.Style.FILL);
-
-            canvas.drawText(name, tile.centerX(), tile.bottom - 15.0f, label);
-        }
-
-        pendingPickerArt.set(toBuffer(grid));
-        grid.recycle();
-
-        pendingEnvButton.set(toBuffer(buildEnvButton()));
-    }
-
-    // A framed landscape, which is about as much as reads at this size
-    private Bitmap buildEnvButton() {
-        Bitmap button = Bitmap.createBitmap(ENV_BUTTON_TEX, ENV_BUTTON_TEX,
-                                            Bitmap.Config.ARGB_8888);
-        Canvas canvas = new Canvas(button);
-        Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
-        canvas.drawColor(0, PorterDuff.Mode.CLEAR);
-
-        paint.setColor(0xEEFFFFFF);
-        paint.setStyle(Paint.Style.STROKE);
-        paint.setStrokeWidth(6.0f);
-        canvas.drawRoundRect(new RectF(14.0f, 14.0f, 114.0f, 114.0f), 22.0f, 22.0f, paint);
-
-        paint.setStyle(Paint.Style.FILL);
-        canvas.drawCircle(46.0f, 46.0f, 9.0f, paint);
-
-        Path hills = new Path();
-        hills.moveTo(26.0f, 100.0f);
-        hills.lineTo(54.0f, 58.0f);
-        hills.lineTo(73.0f, 84.0f);
-        hills.lineTo(84.0f, 70.0f);
-        hills.lineTo(102.0f, 100.0f);
-        hills.close();
-        canvas.drawPath(hills, paint);
-
-        return button;
-    }
-
-    // Standard exit/log-out glyph: a door frame open on one side with an
-    // arrow passing through it, pointing out.
-    private Bitmap buildExitButton() {
-        Bitmap button = Bitmap.createBitmap(ENV_BUTTON_TEX, ENV_BUTTON_TEX,
-                                            Bitmap.Config.ARGB_8888);
-        Canvas canvas = new Canvas(button);
-        Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
-        canvas.drawColor(0, PorterDuff.Mode.CLEAR);
-
-        paint.setColor(0xEEFFFFFF);
-        paint.setStyle(Paint.Style.STROKE);
-        paint.setStrokeWidth(7.0f);
-        paint.setStrokeCap(Paint.Cap.ROUND);
-        paint.setStrokeJoin(Paint.Join.ROUND);
-
-        // Door frame, left side and top/bottom only - open on the right,
-        // which is where the arrow exits
-        Path frame = new Path();
-        frame.moveTo(78.0f, 20.0f);
-        frame.lineTo(34.0f, 20.0f);
-        frame.quadTo(20.0f, 20.0f, 20.0f, 34.0f);
-        frame.lineTo(20.0f, 94.0f);
-        frame.quadTo(20.0f, 108.0f, 34.0f, 108.0f);
-        frame.lineTo(78.0f, 108.0f);
-        canvas.drawPath(frame, paint);
-
-        // Arrow shaft through the opening, pointing out
-        canvas.drawLine(46.0f, 64.0f, 100.0f, 64.0f, paint);
-
-        Path head = new Path();
-        head.moveTo(84.0f, 48.0f);
-        head.lineTo(104.0f, 64.0f);
-        head.lineTo(84.0f, 80.0f);
-        canvas.drawPath(head, paint);
-
-        return button;
+    private static RectF cellRect(int index) {
+        float left = TOPBAR_TEX_MARGIN + index * (float)TOPBAR_CELL_TEX;
+        return new RectF(left, TOPBAR_TEX_MARGIN, left + TOPBAR_CELL_TEX,
+                         TOPBAR_TEX_MARGIN + TOPBAR_CELL_TEX);
     }
 
     private static ByteBuffer toBuffer(Bitmap bitmap) {
@@ -861,56 +602,6 @@ public class XrRenderer implements SurfaceTexture.OnFrameAvailableListener {
         bitmap.copyPixelsToBuffer(pixels);
         pixels.rewind();
         return pixels;
-    }
-
-    // Sampled down on the way out of the JPEG, since a full 4096x2048 decode
-    // for a 240 pixel tile would cost 32 MB apiece
-    private Bitmap decodeThumb(String fileName, int wanted) {
-        InputStream in = null;
-        try {
-            BitmapFactory.Options bounds = new BitmapFactory.Options();
-            bounds.inJustDecodeBounds = true;
-            in = prefsContext.getAssets().open(ENVIRONMENT_DIR + "/" + fileName);
-            BitmapFactory.decodeStream(in, null, bounds);
-            closeQuietly(in);
-
-            BitmapFactory.Options opts = new BitmapFactory.Options();
-            opts.inSampleSize = 1;
-            while (bounds.outHeight / (opts.inSampleSize * 2) >= wanted) {
-                opts.inSampleSize *= 2;
-            }
-
-            in = prefsContext.getAssets().open(ENVIRONMENT_DIR + "/" + fileName);
-            return BitmapFactory.decodeStream(in, null, opts);
-        } catch (IOException | OutOfMemoryError e) {
-            LimeLog.warning("Thumbnail " + fileName + " failed: " + e);
-            return null;
-        } finally {
-            closeQuietly(in);
-        }
-    }
-
-    // spaichingen_hill.jpg becomes Spaichingen Hill
-    private static String labelFor(String fileName) {
-        int dot = fileName.lastIndexOf('.');
-        String base = dot > 0 ? fileName.substring(0, dot) : fileName;
-        StringBuilder out = new StringBuilder(base.length());
-        boolean wordStart = true;
-        for (int i = 0; i < base.length(); i++) {
-            char c = base.charAt(i) == '_' ? ' ' : base.charAt(i);
-            out.append(wordStart ? Character.toUpperCase(c) : c);
-            wordStart = c == ' ';
-        }
-        return out.toString();
-    }
-
-    private static void closeQuietly(InputStream in) {
-        if (in != null) {
-            try {
-                in.close();
-            } catch (IOException ignored) {
-            }
-        }
     }
 
     // Moves the pointer before any press, so a click lands where the user is
@@ -945,9 +636,8 @@ public class XrRenderer implements SurfaceTexture.OnFrameAvailableListener {
             saveScreenPose();
         }
 
-        int pick = (int)inputState[IN_PICKER_PICK];
-        if (pick >= 0) {
-            chooseEnvironment(pick);
+        if (inputState[IN_PASSTHROUGH_DIRTY] != 0.0f) {
+            savePassthroughLevel(inputState[IN_PASSTHROUGH_LEVEL]);
         }
 
         if (inputState[IN_EXIT_PRESSED] != 0.0f && inputListener != null) {
@@ -1011,6 +701,17 @@ public class XrRenderer implements SurfaceTexture.OnFrameAvailableListener {
 
         PreferenceManager.getDefaultSharedPreferences(prefsContext).edit()
                 .putString(PreferenceConfiguration.VR_SCREEN_POSE_PREF_STRING, sb.toString())
+                .apply();
+    }
+
+    // Written once when a slider drag ends, mirroring saveScreenPose() -
+    // restored in start() via nativeSetPassthroughLevel.
+    private void savePassthroughLevel(float level) {
+        if (prefsContext == null) {
+            return;
+        }
+        PreferenceManager.getDefaultSharedPreferences(prefsContext).edit()
+                .putFloat(PreferenceConfiguration.VR_PASSTHROUGH_LEVEL_PREF_STRING, level)
                 .apply();
     }
 

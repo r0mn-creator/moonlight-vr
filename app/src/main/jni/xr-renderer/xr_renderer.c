@@ -97,11 +97,12 @@
 #define IN_SCROLL   4
 #define IN_POINTER  5
 #define IN_POSE_DIRTY 6
+// Passthrough brightness slider, both modes - only sent when a drag just
+// ended (IN_PASSTHROUGH_DIRTY), same one-shot pattern as IN_POSE_DIRTY.
+#define IN_PASSTHROUGH_LEVEL 7
 // x y z, then the orientation quaternion, then width and cylinder radius
 #define IN_POSE     8
-// The cell just chosen in the environment grid, or -1
-#define IN_PICKER_PICK 17
-// Productivity mode's top menu bar exit button, pressed this frame
+// Top menu bar exit button, pressed this frame - shared by both modes
 #define IN_EXIT_PRESSED 18
 // Spatial audio: -1..1 left/right balance and 0..1 distance gain, both
 // relative to the user's head and the centre screen. Neutral (0, 1) outside
@@ -110,13 +111,15 @@
 #define IN_AUDIO_GAIN 20
 // Phase 2: pointer/click control for the 3 PMode screens themselves (Phase 1
 // only ever hit-tested the exit button). -1 in IN_PMODE_SCREEN means no
-// screen is currently under the ray, same "not a real value" convention as
-// IN_PICKER_PICK's -1.
+// screen is currently under the ray.
 #define IN_PMODE_HIT     21
 #define IN_PMODE_SCREEN  22
 #define IN_PMODE_U       23
 #define IN_PMODE_V       24
 #define IN_PMODE_BUTTONS 25
+// Reuses slot 17 (the environment-picker's old pick slot, retired with it) -
+// see IN_PASSTHROUGH_LEVEL above.
+#define IN_PASSTHROUGH_DIRTY 17
 #define IN_SLOTS    26
 
 // Grab thresholds for the grip, and the range a resize is allowed to reach
@@ -133,6 +136,7 @@
 #define GRAB_NONE   0
 #define GRAB_MOVE   1
 #define GRAB_RESIZE 2
+#define GRAB_SLIDER 3
 
 // All as a fraction of screen width, so the handles keep their proportions as
 // the screen is resized
@@ -155,32 +159,16 @@
 #define CORNER_TEX_W 64
 #define CORNER_TEX_H 64
 
-// Environment picker. A grid of thumbnails drawn in Java and shown as one
-// quad, with the hover and selection marks as separate outline quads so
-// pointing around the grid never costs an upload.
-#define PICKER_COLS 3
-#define PICKER_ROWS 2
-#define PICKER_CELLS (PICKER_COLS * PICKER_ROWS)
-#define PICKER_TEX_W 768
-#define PICKER_TEX_H 512
-#define PICKER_WIDTH_FRAC 0.55f
+// Size of one cell in the top bar icon strip (see topBarSwapchain below) and
+// of the slider drag-thumb's hover ring.
 #define OUTLINE_TEX 128
-// The button that opens it, sitting to the left of the move bar
-#define ENV_BUTTON_FRAC 0.048f
-#define ENV_GAP_FRAC 0.02f
 
-#define HOVER_ENVBUTTON 4
-#define HOVER_PICKER    5
 // Nothing under the ray, but close enough to the screen to keep drawing it
-#define HOVER_HALO      6
+#define HOVER_HALO      4
 // How far past each edge that reaches, as a fraction of the screen
 #define HALO_FRAC 0.5f
 // How far the ray runs when it is aimed at nothing at all, in metres
 #define FREE_BEAM_M 4.0f
-
-// Radius of the environment sphere in metres. Finite, so leaning gives the
-// room a size instead of it sitting infinitely far off.
-#define ENV_RADIUS_M 12.0f
 
 // Return codes for waitBeginFrame
 #define FRAME_EXIT   -1
@@ -233,7 +221,6 @@
 #define PROP_BEAM_WIDTH "debug.moonlight.beamwidth"
 #define PROP_POINTER_WAKE "debug.moonlight.pointerwake"
 #define PROP_POINTER_SLEEP "debug.moonlight.pointersleep"
-#define PROP_ENV_RADIUS "debug.moonlight.envradius"
 
 // Bins for the percentile search over the model output
 #define DEPTH_HIST_BINS 512
@@ -250,15 +237,49 @@
 #define PRODUCTIVITY_SCREEN_WIDTH_M 1.35f
 #define PRODUCTIVITY_GAP_M 0.06f
 
-// Top menu bar, centred above the middle screen. Modular by design: each
-// module (exit now, curve/distance/height/spacing later) is one slot in a
-// row, laid out by productivityMenuItemPose(index, count) below. Only the
-// count and what each slot draws/does needs to change to add one.
+// Top menu bar. One module, shared by Gaming and Productivity Mode alike -
+// the only difference between them is which screen(s) it floats above
+// (topBarPose() below branches on ctx->productivityMode for the anchor; the
+// bar's own layout is identical either way). Modular by design: each item
+// (exit, brightness now, more later) is one slot in a row laid out by
+// topBarItemPose(index, count). Only the count and what each slot draws/does
+// needs to change to add one.
 #define PRODUCTIVITY_BAR_Y_OFFSET_M 0.50f
-#define PRODUCTIVITY_MENU_ITEM_SIZE_M 0.10f
-#define PRODUCTIVITY_MENU_ITEM_GAP_M 0.03f
-#define PRODUCTIVITY_MENU_ITEM_COUNT 1
-#define PRODUCTIVITY_MENU_EXIT_INDEX 0
+#define TOPBAR_ITEM_SIZE_M 0.10f
+#define TOPBAR_ITEM_GAP_M 0.03f
+#define TOPBAR_ITEM_COUNT 2
+#define TOPBAR_EXIT_INDEX 0
+#define TOPBAR_BRIGHTNESS_INDEX 1
+#define TOPBAR_WIDTH_M (TOPBAR_ITEM_COUNT * TOPBAR_ITEM_SIZE_M \
+                        + (TOPBAR_ITEM_COUNT - 1) * TOPBAR_ITEM_GAP_M)
+// Gaming's screen is user-resizable (unlike Productivity Mode's fixed-size
+// screens), so its anchor needs a live standoff gap above the current screen
+// height rather than a fixed one.
+#define TOPBAR_GAP_FRAC 0.035f
+
+// A soft, mostly-see-through pill drawn behind the icons (Java side, baked
+// into the same texture) so they stay legible against a bright wall. Bleeds
+// past the icon strip's own bounds so the feather has room to fall off
+// before hitting the texture edge - the strip texture and the render quad
+// are both sized bigger than the icons alone to match.
+#define TOPBAR_TEX_MARGIN 40
+#define TOPBAR_BG_MARGIN_M 0.031f
+#define TOPBAR_TEX_W (OUTLINE_TEX * TOPBAR_ITEM_COUNT + TOPBAR_TEX_MARGIN * 2)
+#define TOPBAR_TEX_H (OUTLINE_TEX + TOPBAR_TEX_MARGIN * 2)
+
+// Passthrough brightness slider, opened by tapping the brightness icon.
+// Right = full passthrough (default), left = full black.
+#define SLIDER_TRACK_WIDTH_M 0.28f
+#define SLIDER_TRACK_HEIGHT_M 0.03f
+#define SLIDER_THUMB_SIZE_M 0.045f
+#define SLIDER_GAP_M 0.03f
+#define SLIDER_TRACK_TEX_W 256
+#define SLIDER_TRACK_TEX_H 32
+#define SLIDER_THUMB_TEX 48
+// One dot per side, alpha-only (RGB unused) - the whole visible passthrough
+// is dimmed by compositing a black sphere behind everything, so the texture
+// itself never needs more than one colour.
+#define DIM_TEX 4
 
 typedef struct { float x, y, z; } Vec3;
 
@@ -413,17 +434,6 @@ typedef struct {
     int cylinderSupported;
     int equirectSupported;
 
-    // 360 photo shown behind everything when passthrough is off. An equirect
-    // layer, so the compositor draws the environment and we still have no
-    // projection layer and no geometry.
-    XrSwapchain backgroundSwapchain;
-    uint32_t backgroundImageCount;
-    XrSwapchainImageOpenGLESKHR* backgroundImages;
-    int backgroundWidth;
-    int backgroundHeight;
-    int backgroundReady;
-    int backgroundEnabled;
-    float envRadius;
     int srgbWriteControl;
     // Passthrough is just an environment blend mode: with alpha blend the
     // runtime shows the room wherever our layers do not cover. Both headsets
@@ -565,6 +575,13 @@ typedef struct {
     float grabDiagX, grabDiagY;
     int poseDirty;
 
+    // Passthrough brightness slider, opened from the top bar. 1.0 = full
+    // passthrough (default), 0.0 = full black. GRAB_SLIDER reuses grabMode/
+    // grabHand above rather than adding a parallel pair of fields.
+    float passthroughLevel;
+    int passthroughLevelDirty;
+    int sliderOpen;
+
     // Hover state, read by the frame loop to decide which handle to draw
     int hoverKind;
     int hoverCorner;
@@ -576,23 +593,34 @@ typedef struct {
     XrSwapchainImageOpenGLESKHR* cornerImages;
     int handleArtReady;
 
-    XrSwapchain pickerSwapchain;
-    XrSwapchain envButtonSwapchain;
-    XrSwapchain outlineSwapchain;
-    uint32_t pickerImageCount;
-    uint32_t envButtonImageCount;
-    uint32_t outlineImageCount;
-    XrSwapchainImageOpenGLESKHR* pickerImages;
-    XrSwapchainImageOpenGLESKHR* envButtonImages;
-    XrSwapchainImageOpenGLESKHR* outlineImages;
-    int pickerReady;
-    int envButtonReady;
-    int outlineReady;
-    int pickerOpen;
-    int pickerHover;
-    int pickerChoice;
-    int pickerPick;
-    int envButtonHot;
+    // Top bar icon strip (Exit, Brightness, ...), one texture wide enough for
+    // TOPBAR_ITEM_COUNT cells, drawn in Java and uploaded whole - see
+    // nativeUploadTopBarArt. Shared by both modes; see topBarPose().
+    XrSwapchain topBarSwapchain;
+    uint32_t topBarImageCount;
+    XrSwapchainImageOpenGLESKHR* topBarImages;
+    int topBarReady;
+
+    // Brightness slider, opened from the top bar. Track is static art built
+    // once like the move bar; the thumb is its own quad so dragging it is
+    // just a pose update, never a texture re-upload.
+    XrSwapchain sliderTrackSwapchain;
+    XrSwapchain sliderThumbSwapchain;
+    uint32_t sliderTrackImageCount;
+    uint32_t sliderThumbImageCount;
+    XrSwapchainImageOpenGLESKHR* sliderTrackImages;
+    XrSwapchainImageOpenGLESKHR* sliderThumbImages;
+    int sliderArtReady;
+
+    // Full-surround dim layer (an equirect sphere, radius 0 = infinite) that
+    // the passthrough brightness slider controls. Solid black; only its alpha
+    // ever changes, re-uploaded solely when passthroughLevel actually moves.
+    XrSwapchain dimSwapchain;
+    uint32_t dimImageCount;
+    XrSwapchainImageOpenGLESKHR* dimImages;
+    int dimReady;
+    float dimUploadedLevel;
+    int dimUploadedValid;
 
     long statFrames;
     long statTotalNs;
@@ -2372,54 +2400,78 @@ static int createPointerSwapchain(XrCtx* ctx) {
         ctx->barSwapchain = XR_NULL_HANDLE;
     }
 
-    info.width = PICKER_TEX_W;
-    info.height = PICKER_TEX_H;
-    if (checkXr(xrCreateSwapchain(ctx->session, &info, &ctx->pickerSwapchain),
-                "create picker swapchain")) {
-        xrEnumerateSwapchainImages(ctx->pickerSwapchain, 0, &ctx->pickerImageCount, NULL);
-        ctx->pickerImages = calloc(ctx->pickerImageCount, sizeof(XrSwapchainImageOpenGLESKHR));
-        for (uint32_t i = 0; i < ctx->pickerImageCount; i++) {
-            ctx->pickerImages[i].type = XR_TYPE_SWAPCHAIN_IMAGE_OPENGL_ES_KHR;
+    // Top bar icon strip - one texture, TOPBAR_ITEM_COUNT cells wide plus a
+    // bleed margin for the background pill's feather, shared by both modes
+    // (see topBarPose()).
+    info.width = TOPBAR_TEX_W;
+    info.height = TOPBAR_TEX_H;
+    if (checkXr(xrCreateSwapchain(ctx->session, &info, &ctx->topBarSwapchain),
+                "create top bar swapchain")) {
+        xrEnumerateSwapchainImages(ctx->topBarSwapchain, 0, &ctx->topBarImageCount, NULL);
+        ctx->topBarImages = calloc(ctx->topBarImageCount,
+                                   sizeof(XrSwapchainImageOpenGLESKHR));
+        for (uint32_t i = 0; i < ctx->topBarImageCount; i++) {
+            ctx->topBarImages[i].type = XR_TYPE_SWAPCHAIN_IMAGE_OPENGL_ES_KHR;
         }
-        xrEnumerateSwapchainImages(ctx->pickerSwapchain, ctx->pickerImageCount,
-                                   &ctx->pickerImageCount,
-                                   (XrSwapchainImageBaseHeader*)ctx->pickerImages);
+        xrEnumerateSwapchainImages(ctx->topBarSwapchain, ctx->topBarImageCount,
+                                   &ctx->topBarImageCount,
+                                   (XrSwapchainImageBaseHeader*)ctx->topBarImages);
     }
     else {
-        ctx->pickerSwapchain = XR_NULL_HANDLE;
+        ctx->topBarSwapchain = XR_NULL_HANDLE;
     }
 
-    info.width = OUTLINE_TEX;
-    info.height = OUTLINE_TEX;
-    if (checkXr(xrCreateSwapchain(ctx->session, &info, &ctx->envButtonSwapchain),
-                "create env button swapchain")) {
-        xrEnumerateSwapchainImages(ctx->envButtonSwapchain, 0, &ctx->envButtonImageCount, NULL);
-        ctx->envButtonImages = calloc(ctx->envButtonImageCount,
-                                      sizeof(XrSwapchainImageOpenGLESKHR));
-        for (uint32_t i = 0; i < ctx->envButtonImageCount; i++) {
-            ctx->envButtonImages[i].type = XR_TYPE_SWAPCHAIN_IMAGE_OPENGL_ES_KHR;
+    info.width = SLIDER_TRACK_TEX_W;
+    info.height = SLIDER_TRACK_TEX_H;
+    if (checkXr(xrCreateSwapchain(ctx->session, &info, &ctx->sliderTrackSwapchain),
+                "create slider track swapchain")) {
+        xrEnumerateSwapchainImages(ctx->sliderTrackSwapchain, 0, &ctx->sliderTrackImageCount, NULL);
+        ctx->sliderTrackImages = calloc(ctx->sliderTrackImageCount,
+                                        sizeof(XrSwapchainImageOpenGLESKHR));
+        for (uint32_t i = 0; i < ctx->sliderTrackImageCount; i++) {
+            ctx->sliderTrackImages[i].type = XR_TYPE_SWAPCHAIN_IMAGE_OPENGL_ES_KHR;
         }
-        xrEnumerateSwapchainImages(ctx->envButtonSwapchain, ctx->envButtonImageCount,
-                                   &ctx->envButtonImageCount,
-                                   (XrSwapchainImageBaseHeader*)ctx->envButtonImages);
+        xrEnumerateSwapchainImages(ctx->sliderTrackSwapchain, ctx->sliderTrackImageCount,
+                                   &ctx->sliderTrackImageCount,
+                                   (XrSwapchainImageBaseHeader*)ctx->sliderTrackImages);
     }
     else {
-        ctx->envButtonSwapchain = XR_NULL_HANDLE;
+        ctx->sliderTrackSwapchain = XR_NULL_HANDLE;
     }
 
-    if (checkXr(xrCreateSwapchain(ctx->session, &info, &ctx->outlineSwapchain),
-                "create outline swapchain")) {
-        xrEnumerateSwapchainImages(ctx->outlineSwapchain, 0, &ctx->outlineImageCount, NULL);
-        ctx->outlineImages = calloc(ctx->outlineImageCount, sizeof(XrSwapchainImageOpenGLESKHR));
-        for (uint32_t i = 0; i < ctx->outlineImageCount; i++) {
-            ctx->outlineImages[i].type = XR_TYPE_SWAPCHAIN_IMAGE_OPENGL_ES_KHR;
+    info.width = SLIDER_THUMB_TEX;
+    info.height = SLIDER_THUMB_TEX;
+    if (checkXr(xrCreateSwapchain(ctx->session, &info, &ctx->sliderThumbSwapchain),
+                "create slider thumb swapchain")) {
+        xrEnumerateSwapchainImages(ctx->sliderThumbSwapchain, 0, &ctx->sliderThumbImageCount, NULL);
+        ctx->sliderThumbImages = calloc(ctx->sliderThumbImageCount,
+                                        sizeof(XrSwapchainImageOpenGLESKHR));
+        for (uint32_t i = 0; i < ctx->sliderThumbImageCount; i++) {
+            ctx->sliderThumbImages[i].type = XR_TYPE_SWAPCHAIN_IMAGE_OPENGL_ES_KHR;
         }
-        xrEnumerateSwapchainImages(ctx->outlineSwapchain, ctx->outlineImageCount,
-                                   &ctx->outlineImageCount,
-                                   (XrSwapchainImageBaseHeader*)ctx->outlineImages);
+        xrEnumerateSwapchainImages(ctx->sliderThumbSwapchain, ctx->sliderThumbImageCount,
+                                   &ctx->sliderThumbImageCount,
+                                   (XrSwapchainImageBaseHeader*)ctx->sliderThumbImages);
     }
     else {
-        ctx->outlineSwapchain = XR_NULL_HANDLE;
+        ctx->sliderThumbSwapchain = XR_NULL_HANDLE;
+    }
+
+    // Tiny - alpha is the only thing about this texture that ever matters
+    info.width = DIM_TEX;
+    info.height = DIM_TEX;
+    if (checkXr(xrCreateSwapchain(ctx->session, &info, &ctx->dimSwapchain),
+                "create dim swapchain")) {
+        xrEnumerateSwapchainImages(ctx->dimSwapchain, 0, &ctx->dimImageCount, NULL);
+        ctx->dimImages = calloc(ctx->dimImageCount, sizeof(XrSwapchainImageOpenGLESKHR));
+        for (uint32_t i = 0; i < ctx->dimImageCount; i++) {
+            ctx->dimImages[i].type = XR_TYPE_SWAPCHAIN_IMAGE_OPENGL_ES_KHR;
+        }
+        xrEnumerateSwapchainImages(ctx->dimSwapchain, ctx->dimImageCount, &ctx->dimImageCount,
+                                   (XrSwapchainImageBaseHeader*)ctx->dimImages);
+    }
+    else {
+        ctx->dimSwapchain = XR_NULL_HANDLE;
     }
 
     info.width = CORNER_TEX_W;
@@ -2546,48 +2598,63 @@ static void buildHandleArt(XrCtx* ctx) {
         }
     }
 
-    unsigned char* outline = calloc(OUTLINE_TEX * OUTLINE_TEX * 4, 1);
-    if (outline != NULL) {
-        // Rounded rectangle border, used to mark the hovered and the selected
-        // cell in the picker
-        const float radius = 16.0f;
-        const float border = 2.5f;
-        const float half = OUTLINE_TEX * 0.5f;
-        for (int y = 0; y < OUTLINE_TEX; y++) {
-            for (int x = 0; x < OUTLINE_TEX; x++) {
-                // Signed distance to a rounded rectangle, so the ring is just
-                // the pixels whose distance is under the border width
-                float qx = fabsf(x + 0.5f - half) - (half - radius);
-                float qy = fabsf(y + 0.5f - half) - (half - radius);
-                float mx = qx > 0.0f ? qx : 0.0f;
-                float my = qy > 0.0f ? qy : 0.0f;
-                float outside = sqrtf(mx * mx + my * my);
-                float inside = (qx > qy ? qx : qy);
-                if (inside > 0.0f) {
-                    inside = 0.0f;
-                }
-                float dist = fabsf(outside + inside);
-
-                unsigned char a = (unsigned char)(edgeAlpha(dist, border) * 255.0f);
-                unsigned char* p = outline + ((y * OUTLINE_TEX) + x) * 4;
-                p[0] = p[1] = p[2] = a;
-                p[3] = a;
-            }
-        }
-    }
-
     int ok = uploadArt(ctx, ctx->barSwapchain, ctx->barImages, bar, BAR_TEX_W, BAR_TEX_H);
-    if (outline != NULL) {
-        ctx->outlineReady = uploadArt(ctx, ctx->outlineSwapchain, ctx->outlineImages,
-                                      outline, OUTLINE_TEX, OUTLINE_TEX);
-        free(outline);
-    }
     ok &= uploadArt(ctx, ctx->cornerSwapchain, ctx->cornerImages, corner,
                     CORNER_TEX_W, CORNER_TEX_H);
     ctx->handleArtReady = ok;
 
     free(bar);
     free(corner);
+}
+
+// Slider track (a pill, same technique as the move bar above) and thumb (a
+// filled soft-edged disk). Built once; the thumb's position along the track
+// is a per-frame pose update in nativeEndFrame, never a texture change.
+static void buildSliderArt(XrCtx* ctx) {
+    unsigned char* track = calloc(SLIDER_TRACK_TEX_W * SLIDER_TRACK_TEX_H * 4, 1);
+    unsigned char* thumb = calloc(SLIDER_THUMB_TEX * SLIDER_THUMB_TEX * 4, 1);
+    if (track == NULL || thumb == NULL) {
+        free(track);
+        free(thumb);
+        return;
+    }
+
+    float trackR = SLIDER_TRACK_TEX_H * 0.5f;
+    for (int y = 0; y < SLIDER_TRACK_TEX_H; y++) {
+        for (int x = 0; x < SLIDER_TRACK_TEX_W; x++) {
+            float px = x + 0.5f, py = y + 0.5f;
+            float cx = px;
+            if (cx < trackR) cx = trackR;
+            if (cx > SLIDER_TRACK_TEX_W - trackR) cx = SLIDER_TRACK_TEX_W - trackR;
+            float dx = px - cx, dy = py - trackR;
+            float d = sqrtf(dx * dx + dy * dy);
+            unsigned char* p = track + ((y * SLIDER_TRACK_TEX_W) + x) * 4;
+            unsigned char a = (unsigned char)(edgeAlpha(d, trackR - 1.0f) * 200.0f);
+            p[0] = p[1] = p[2] = a;
+            p[3] = a;
+        }
+    }
+
+    float thumbR = SLIDER_THUMB_TEX * 0.5f;
+    for (int y = 0; y < SLIDER_THUMB_TEX; y++) {
+        for (int x = 0; x < SLIDER_THUMB_TEX; x++) {
+            float dx = (x + 0.5f) - thumbR, dy = (y + 0.5f) - thumbR;
+            float d = sqrtf(dx * dx + dy * dy);
+            unsigned char* p = thumb + ((y * SLIDER_THUMB_TEX) + x) * 4;
+            unsigned char a = (unsigned char)(edgeAlpha(d, thumbR - 1.5f) * 255.0f);
+            p[0] = p[1] = p[2] = 255;
+            p[3] = a;
+        }
+    }
+
+    int ok = uploadArt(ctx, ctx->sliderTrackSwapchain, ctx->sliderTrackImages, track,
+                       SLIDER_TRACK_TEX_W, SLIDER_TRACK_TEX_H);
+    ok &= uploadArt(ctx, ctx->sliderThumbSwapchain, ctx->sliderThumbImages, thumb,
+                    SLIDER_THUMB_TEX, SLIDER_THUMB_TEX);
+    ctx->sliderArtReady = ok;
+
+    free(track);
+    free(thumb);
 }
 
 // Has to run on the frame loop with the session going. Waiting on a swapchain
@@ -2660,6 +2727,7 @@ static int uploadPointerArt(XrCtx* ctx) {
     free(px);
     if (ctx->pointerArtReady) {
         buildHandleArt(ctx);
+        buildSliderArt(ctx);
     }
     return ctx->pointerArtReady;
 }
@@ -2707,11 +2775,25 @@ static XrPosef productivityScreenPose(int index) {
     return pose;
 }
 
-// Anchor for the whole top menu bar: straight above the centre screen,
-// facing the same way it does.
-static XrPosef productivityMenuBarPose(void) {
-    XrPosef pose = productivityScreenPose((PRODUCTIVITY_SCREEN_COUNT - 1) / 2);
-    Vec3 local = { 0.0f, PRODUCTIVITY_BAR_Y_OFFSET_M, 0.02f };
+// Anchor for the whole top menu bar: straight above the screen(s), facing
+// the same way they do. The bar itself is one module shared by both modes -
+// this is the only place that actually differs between them, since Gaming
+// has one resizable screen and Productivity Mode has three fixed ones.
+static XrPosef topBarPose(XrCtx* ctx) {
+    if (ctx->productivityMode) {
+        XrPosef pose = productivityScreenPose((PRODUCTIVITY_SCREEN_COUNT - 1) / 2);
+        Vec3 local = { 0.0f, PRODUCTIVITY_BAR_Y_OFFSET_M, 0.02f };
+        Vec3 up = quatRotate(pose.orientation, local);
+        pose.position.x += up.x;
+        pose.position.y += up.y;
+        pose.position.z += up.z;
+        return pose;
+    }
+
+    XrPosef pose = ctx->screenPose;
+    float screenHeight = ctx->screenWidth * (float)ctx->videoHeight / (float)ctx->videoWidth;
+    Vec3 local = { 0.0f, screenHeight * 0.5f + ctx->screenWidth * TOPBAR_GAP_FRAC
+                         + TOPBAR_ITEM_SIZE_M * 0.5f, 0.02f };
     Vec3 up = quatRotate(pose.orientation, local);
     pose.position.x += up.x;
     pose.position.y += up.y;
@@ -2720,11 +2802,11 @@ static XrPosef productivityMenuBarPose(void) {
 }
 
 // One slot along the bar. Modules are laid out left to right in index order;
-// adding one is just raising PRODUCTIVITY_MENU_ITEM_COUNT and giving the new
-// index a place to draw/hit-test, same as PRODUCTIVITY_MENU_EXIT_INDEX below.
-static XrPosef productivityMenuItemPose(int index, int count) {
-    XrPosef pose = productivityMenuBarPose();
-    float step = PRODUCTIVITY_MENU_ITEM_SIZE_M + PRODUCTIVITY_MENU_ITEM_GAP_M;
+// adding one is just raising TOPBAR_ITEM_COUNT and giving the new index a
+// place to draw/hit-test, same as TOPBAR_EXIT_INDEX/TOPBAR_BRIGHTNESS_INDEX.
+static XrPosef topBarItemPose(XrCtx* ctx, int index, int count) {
+    XrPosef pose = topBarPose(ctx);
+    float step = TOPBAR_ITEM_SIZE_M + TOPBAR_ITEM_GAP_M;
     float x = (index - (count - 1) * 0.5f) * step;
     Vec3 offset = quatRotate(pose.orientation, (Vec3){ x, 0.0f, 0.0f });
     pose.position.x += offset.x;
@@ -2733,23 +2815,43 @@ static XrPosef productivityMenuItemPose(int index, int count) {
     return pose;
 }
 
+// Above the brightness icon specifically, not the bar centre - it should
+// read as belonging to the icon that opened it.
+static XrPosef topBarSliderPose(XrCtx* ctx) {
+    XrPosef pose = topBarItemPose(ctx, TOPBAR_BRIGHTNESS_INDEX, TOPBAR_ITEM_COUNT);
+    Vec3 local = { 0.0f, TOPBAR_ITEM_SIZE_M * 0.5f + SLIDER_GAP_M + SLIDER_TRACK_HEIGHT_M * 0.5f,
+                   -0.005f };
+    Vec3 up = quatRotate(pose.orientation, local);
+    pose.position.x += up.x;
+    pose.position.y += up.y;
+    pose.position.z += up.z;
+    return pose;
+}
+
 // Handed back only when a grab ends, so preferences are written once per move
 // rather than every frame of it
+// Flushes anything pending back to Java once it settles, rather than on
+// every frame of a drag - screen pose (Gaming only) and passthrough level
+// (both modes) are independent, so each has its own dirty flag.
 static void writeInputPose(XrCtx* ctx, float* out) {
-    if (!ctx->poseDirty) {
-        return;
+    if (ctx->poseDirty) {
+        ctx->poseDirty = 0;
+        out[IN_POSE_DIRTY] = 1.0f;
+        out[IN_POSE + 0] = ctx->screenPose.position.x;
+        out[IN_POSE + 1] = ctx->screenPose.position.y;
+        out[IN_POSE + 2] = ctx->screenPose.position.z;
+        out[IN_POSE + 3] = ctx->screenPose.orientation.x;
+        out[IN_POSE + 4] = ctx->screenPose.orientation.y;
+        out[IN_POSE + 5] = ctx->screenPose.orientation.z;
+        out[IN_POSE + 6] = ctx->screenPose.orientation.w;
+        out[IN_POSE + 7] = ctx->screenWidth;
+        out[IN_POSE + 8] = ctx->screenRadius;
     }
-    ctx->poseDirty = 0;
-    out[IN_POSE_DIRTY] = 1.0f;
-    out[IN_POSE + 0] = ctx->screenPose.position.x;
-    out[IN_POSE + 1] = ctx->screenPose.position.y;
-    out[IN_POSE + 2] = ctx->screenPose.position.z;
-    out[IN_POSE + 3] = ctx->screenPose.orientation.x;
-    out[IN_POSE + 4] = ctx->screenPose.orientation.y;
-    out[IN_POSE + 5] = ctx->screenPose.orientation.z;
-    out[IN_POSE + 6] = ctx->screenPose.orientation.w;
-    out[IN_POSE + 7] = ctx->screenWidth;
-    out[IN_POSE + 8] = ctx->screenRadius;
+    if (ctx->passthroughLevelDirty) {
+        ctx->passthroughLevelDirty = 0;
+        out[IN_PASSTHROUGH_DIRTY] = 1.0f;
+        out[IN_PASSTHROUGH_LEVEL] = ctx->passthroughLevel;
+    }
 }
 
 // A short, light click rather than a buzz - this fires on every button
@@ -2897,54 +2999,13 @@ static void applyGrab(XrCtx* ctx, XrPosef* aims, const int* valid, int hand,
     ctx->screenPose.position.z = ctx->grabScreen.position.z + centre.z;
 }
 
-// The picker floats just in front of the screen, centred on it
-static XrPosef pickerPose(XrCtx* ctx, float* outWidth, float* outHeight) {
-    float width = ctx->screenWidth * PICKER_WIDTH_FRAC;
-    *outWidth = width;
-    *outHeight = width * (float)PICKER_TEX_H / (float)PICKER_TEX_W;
-
-    Vec3 local = { 0.0f, 0.0f, 0.06f };
-    Vec3 offset = quatRotate(ctx->screenPose.orientation, local);
-    XrPosef pose = ctx->screenPose;
-    pose.position.x += offset.x;
-    pose.position.y += offset.y;
-    pose.position.z += offset.z;
-    return pose;
-}
-
-// Button sits to the left of the move bar, at the same height
-static void envButtonPlacement(XrCtx* ctx, float height, Vec3* outLocal, float* outSide) {
-    float side = ctx->screenWidth * ENV_BUTTON_FRAC;
-    float barW = ctx->screenWidth * BAR_WIDTH_FRAC;
-    float barH = ctx->screenWidth * BAR_HEIGHT_FRAC;
-    outLocal->x = -(barW * 0.5f + ctx->screenWidth * ENV_GAP_FRAC + side * 0.5f);
-    outLocal->y = -(height * 0.5f + ctx->screenWidth * BAR_GAP_FRAC + barH * 0.5f);
-    outLocal->z = 0.005f;
-    *outSide = side;
-}
-
-static int envButtonHit(XrCtx* ctx, float u, float v, float height) {
-    Vec3 local;
-    float side;
-    envButtonPlacement(ctx, height, &local, &side);
-
-    // Back into uv, where the button reaches a little further than it draws
-    float cu = 0.5f + local.x / ctx->screenWidth;
-    float cv = 0.5f - local.y / height;
-    float halfU = side * HOVER_MARGIN * 0.5f / ctx->screenWidth;
-    float halfV = side * HOVER_MARGIN * 0.5f / height;
-    return fabsf(u - cu) < halfU && fabsf(v - cv) < halfV;
-}
-
-// Where the ray lands on furniture rather than on the picture. The grid has a
-// plane of its own, everything else sits on the screen.
+// Where the ray lands on furniture rather than on the picture. Used to be two
+// cases (the picker grid had a plane of its own, off the screen); now
+// everything sits on the screen, so this is a plain pass-through kept for the
+// call sites' sake.
 static Vec3 furniturePoint(XrCtx* ctx, int hover, float u, float v, XrPosef screenPose,
                            float height, float radius, int curved) {
-    if (hover == HOVER_PICKER) {
-        float pickW, pickH;
-        XrPosef pose = pickerPose(ctx, &pickW, &pickH);
-        return screenPoint(u, v, pose, pickW, pickH, 0.0f, 0);
-    }
+    (void)hover;
     return screenPoint(u, v, screenPose, ctx->screenWidth, height, radius, curved);
 }
 
@@ -3001,22 +3062,22 @@ static void destroyCtx(JNIEnv* env, XrCtx* ctx) {
         xrDestroySwapchain(ctx->cornerSwapchain);
     }
     free(ctx->cornerImages);
-    if (ctx->backgroundSwapchain != XR_NULL_HANDLE) {
-        xrDestroySwapchain(ctx->backgroundSwapchain);
+    if (ctx->topBarSwapchain != XR_NULL_HANDLE) {
+        xrDestroySwapchain(ctx->topBarSwapchain);
     }
-    free(ctx->backgroundImages);
-    if (ctx->pickerSwapchain != XR_NULL_HANDLE) {
-        xrDestroySwapchain(ctx->pickerSwapchain);
+    free(ctx->topBarImages);
+    if (ctx->sliderTrackSwapchain != XR_NULL_HANDLE) {
+        xrDestroySwapchain(ctx->sliderTrackSwapchain);
     }
-    free(ctx->pickerImages);
-    if (ctx->envButtonSwapchain != XR_NULL_HANDLE) {
-        xrDestroySwapchain(ctx->envButtonSwapchain);
+    free(ctx->sliderTrackImages);
+    if (ctx->sliderThumbSwapchain != XR_NULL_HANDLE) {
+        xrDestroySwapchain(ctx->sliderThumbSwapchain);
     }
-    free(ctx->envButtonImages);
-    if (ctx->outlineSwapchain != XR_NULL_HANDLE) {
-        xrDestroySwapchain(ctx->outlineSwapchain);
+    free(ctx->sliderThumbImages);
+    if (ctx->dimSwapchain != XR_NULL_HANDLE) {
+        xrDestroySwapchain(ctx->dimSwapchain);
     }
-    free(ctx->outlineImages);
+    free(ctx->dimImages);
     if (ctx->localSpace != XR_NULL_HANDLE) {
         xrDestroySpace(ctx->localSpace);
     }
@@ -3083,7 +3144,6 @@ Java_com_limelight_binding_video_XrRenderer_nativeInit(JNIEnv* env, jobject thiz
     ctx->pointerSleep = POINTER_SLEEP_SEC;
     // 1 cm reads as a thin line at 3 m without disappearing
     ctx->beamWidth = 0.010f;
-    ctx->envRadius = ENV_RADIUS_M;
     // Comfort comes from absolute disparity and depth comes from the steps
     // between objects, so the overall shape is pulled toward the screen plane
     // while the local detail is boosted. Measured on captured frames this is
@@ -3093,6 +3153,10 @@ Java_com_limelight_binding_video_XrRenderer_nativeInit(JNIEnv* env, jobject thiz
     ctx->depthGlobal = 1.0f;
     ctx->convergence = convergence / 100.0f;
     ctx->depthLocal = depthScale / 100.0f;
+    // Full passthrough until nativeSetPassthroughLevel restores the saved
+    // value - a struct fresh out of calloc would otherwise read as 0.0 (full
+    // black) for the handful of frames before Java's restore call lands.
+    ctx->passthroughLevel = 1.0f;
     (*env)->GetJavaVM(env, &ctx->vm);
     ctx->activity = (*env)->NewGlobalRef(env, activity);
 
@@ -3536,6 +3600,67 @@ static void computeSpatialAudio(XrCtx* ctx, XrPosef screenPose, float referenceD
 // machine below (no gaze, no grab/resize, no filtering): one ray, whichever
 // of the 3 screens (or the exit button) it lands on first, one mouse button.
 // That machine can come later if this turns out not to be enough.
+// Exit + brightness icons, and the brightness slider once opened. Shared by
+// both modes - only topBarPose()'s anchor differs (see there). Runs once a
+// frame given both hands' current aim pose/validity. A drag in progress
+// needs the whole array rather than just whichever hand is hovering right
+// now, so a release is still caught even if that hand's pose lookup fails
+// this frame - same reasoning as applyGrab().
+static int updateTopBar(XrCtx* ctx, XrPosef* aims, const int* valid, float* out) {
+    if (ctx->grabMode == GRAB_SLIDER) {
+        int h = ctx->grabHand;
+        if (!valid[h] || !ctx->triggerDown[h]) {
+            ctx->grabMode = GRAB_NONE;
+            ctx->passthroughLevelDirty = 1;
+            return 0;
+        }
+        float u, v;
+        if (screenProject(aims[h], topBarSliderPose(ctx), SLIDER_TRACK_WIDTH_M,
+                          SLIDER_TRACK_HEIGHT_M, 0.0f, 0, &u, &v)) {
+            ctx->passthroughLevel = u < 0.0f ? 0.0f : (u > 1.0f ? 1.0f : u);
+        }
+        return 1;
+    }
+
+    for (int h = 0; h < HAND_COUNT; h++) {
+        if (!valid[h]) {
+            continue;
+        }
+        float u, v;
+        if (screenProject(aims[h], topBarItemPose(ctx, TOPBAR_EXIT_INDEX, TOPBAR_ITEM_COUNT),
+                          TOPBAR_ITEM_SIZE_M, TOPBAR_ITEM_SIZE_M, 0.0f, 0, &u, &v)
+                && u >= 0.0f && u <= 1.0f && v >= 0.0f && v <= 1.0f) {
+            if (ctx->triggerEdge[h]) {
+                out[IN_EXIT_PRESSED] = 1.0f;
+                fireHaptic(ctx, h);
+            }
+            return 1;
+        }
+
+        if (screenProject(aims[h], topBarItemPose(ctx, TOPBAR_BRIGHTNESS_INDEX, TOPBAR_ITEM_COUNT),
+                          TOPBAR_ITEM_SIZE_M, TOPBAR_ITEM_SIZE_M, 0.0f, 0, &u, &v)
+                && u >= 0.0f && u <= 1.0f && v >= 0.0f && v <= 1.0f) {
+            if (ctx->triggerEdge[h]) {
+                ctx->sliderOpen = !ctx->sliderOpen;
+                fireHaptic(ctx, h);
+            }
+            return 1;
+        }
+
+        if (ctx->sliderOpen && ctx->triggerEdge[h]
+                && screenProject(aims[h], topBarSliderPose(ctx), SLIDER_TRACK_WIDTH_M,
+                                 SLIDER_TRACK_HEIGHT_M, 0.0f, 0, &u, &v)
+                && u >= 0.0f && u <= 1.0f && v >= 0.0f && v <= 1.0f) {
+            ctx->grabMode = GRAB_SLIDER;
+            ctx->grabHand = h;
+            ctx->passthroughLevel = u;
+            fireHaptic(ctx, h);
+            return 1;
+        }
+    }
+    return 0;
+}
+
 static void updateProductivityInput(XrCtx* ctx, jboolean pointerEnabled, float* out) {
     out[IN_PMODE_SCREEN] = -1.0f;
 
@@ -3555,9 +3680,6 @@ static void updateProductivityInput(XrCtx* ctx, jboolean pointerEnabled, float* 
         return;
     }
 
-    XrPosef buttonPose = productivityMenuItemPose(PRODUCTIVITY_MENU_EXIT_INDEX,
-                                                  PRODUCTIVITY_MENU_ITEM_COUNT);
-
     // Same quad height the render path computes for these screens
     // (renderVideoFrame's productivity branch) - hit-testing has to agree
     // with what's actually drawn, or the ray and the picture disagree about
@@ -3569,6 +3691,8 @@ static void updateProductivityInput(XrCtx* ctx, jboolean pointerEnabled, float* 
     int screenHit = -1;
     int hitHand = -1;
     float hitU = 0.0f, hitV = 0.0f;
+    XrPosef aims[HAND_COUNT];
+    int aimValid[HAND_COUNT] = { 0, 0 };
 
     for (int h = 0; h < HAND_COUNT; h++) {
         int wasDown = ctx->triggerDown[h];
@@ -3587,18 +3711,8 @@ static void updateProductivityInput(XrCtx* ctx, jboolean pointerEnabled, float* 
                 && (loc.locationFlags & needed) == needed)) {
             continue;
         }
-
-        float u, v;
-        if (screenProject(loc.pose, buttonPose, PRODUCTIVITY_MENU_ITEM_SIZE_M,
-                          PRODUCTIVITY_MENU_ITEM_SIZE_M, 0.0f, 0, &u, &v)
-                && u >= 0.0f && u <= 1.0f && v >= 0.0f && v <= 1.0f
-                && ctx->triggerEdge[h]) {
-            out[IN_EXIT_PRESSED] = 1.0f;
-            fireHaptic(ctx, h);
-            // Exit takes priority over the screens for this hand - can't be
-            // pointing at both at once anyway, they don't overlap.
-            continue;
-        }
+        aims[h] = loc.pose;
+        aimValid[h] = 1;
 
         if (screenHit < 0) {
             for (int i = 0; i < PRODUCTIVITY_SCREEN_COUNT; i++) {
@@ -3616,6 +3730,8 @@ static void updateProductivityInput(XrCtx* ctx, jboolean pointerEnabled, float* 
         }
     }
 
+    updateTopBar(ctx, aims, aimValid, out);
+
     int mask = (screenHit >= 0 && ctx->triggerDown[hitHand]) ? VR_BUTTON_LEFT : 0;
     int prevMask = ctx->pmodeButtonsDown;
     ctx->pmodeButtonsDown = mask;
@@ -3630,6 +3746,8 @@ static void updateProductivityInput(XrCtx* ctx, jboolean pointerEnabled, float* 
             fireHaptic(ctx, hitHand);
         }
     }
+
+    writeInputPose(ctx, out);
 }
 
 // Reads the controllers and works out where they are pointing on the screen.
@@ -3649,9 +3767,6 @@ Java_com_limelight_binding_video_XrRenderer_nativeUpdateInput(JNIEnv* env, jobje
     if (ctx != NULL) {
         ctx->gazeEnabled = gazeEnabled;
     }
-    // Zero is a real cell, so "nothing picked" has to be said explicitly. Every
-    // early return below would otherwise read as a press on the first one.
-    out[IN_PICKER_PICK] = -1.0f;
     // Neutral balance/gain by default - Gaming mode never reaches the code
     // that would change these, so its audio is always exactly this, i.e.
     // untouched.
@@ -3770,13 +3885,6 @@ Java_com_limelight_binding_video_XrRenderer_nativeUpdateInput(JNIEnv* env, jobje
         if (screenProject(loc.pose, screenPose, ctx->screenWidth, height, radius, curved,
                           &hitU[h], &hitV[h])) {
             hovers[h] = hoverTest(hitU[h], hitV[h], ctx->screenWidth, height, &corners[h]);
-            // The button reaches past the left end of the bar's zone, so it is
-            // tested here rather than after a hand has been picked. Otherwise
-            // the part of it outside that zone belongs to no hand at all.
-            if ((hovers[h] == HOVER_NONE || hovers[h] == HOVER_BAR)
-                    && envButtonHit(ctx, hitU[h], hitV[h], height)) {
-                hovers[h] = HOVER_ENVBUTTON;
-            }
         }
 
         if (ctx->poseSeen[h] && dt > 0.0f) {
@@ -3805,6 +3913,8 @@ Java_com_limelight_binding_video_XrRenderer_nativeUpdateInput(JNIEnv* env, jobje
         ctx->lastAim[h] = loc.pose;
         ctx->poseSeen[h] = 1;
     }
+
+    updateTopBar(ctx, aimPoses, aimValid, out);
 
     // Gaze has no button of its own, so a pinch from either hand clicks
     // wherever the eyes have landed
@@ -3899,63 +4009,6 @@ Java_com_limelight_binding_video_XrRenderer_nativeUpdateInput(JNIEnv* env, jobje
     int hover = hand >= 0 ? hovers[hand] : HOVER_NONE;
     if (hover == HOVER_CORNER) {
         ctx->hoverCorner = corners[hand];
-    }
-
-    // The picker is modal: while it is open the ray belongs to it and nothing
-    // reaches the picture behind
-    ctx->pickerHover = -1;
-    ctx->envButtonHot = 0;
-    ctx->pickerPick = -1;
-    if (ctx->pickerOpen) {
-        hover = HOVER_PICKER;
-        // Anything the hands were pointing at before belongs to the screen,
-        // and reading those coordinates as grid coordinates would land the
-        // ray somewhere it never was
-        hand = -1;
-        float pickW, pickH;
-        XrPosef pose = pickerPose(ctx, &pickW, &pickH);
-        for (int h = 0; h < SRC_COUNT; h++) {
-            float pu, pv;
-            if (!aimValid[h] || !ctx->pointerAwake) {
-                continue;
-            }
-            if (!screenProject(aimPoses[h], pose, pickW, pickH, 0.0f, 0, &pu, &pv)) {
-                continue;
-            }
-            if (pu < 0.0f || pu > 1.0f || pv < 0.0f || pv > 1.0f) {
-                continue;
-            }
-            int col = (int)(pu * PICKER_COLS);
-            int row = (int)(pv * PICKER_ROWS);
-            if (col >= PICKER_COLS) col = PICKER_COLS - 1;
-            if (row >= PICKER_ROWS) row = PICKER_ROWS - 1;
-            ctx->pickerHover = row * PICKER_COLS + col;
-            hand = h;
-            hitU[h] = pu;
-            hitV[h] = pv;
-
-            if (ctx->triggerEdge[h]) {
-                ctx->pickerPick = ctx->pickerHover;
-                ctx->pickerChoice = ctx->pickerHover;
-                ctx->pickerOpen = 0;
-            }
-            break;
-        }
-
-        // A press that lands nowhere near the grid closes it
-        if (ctx->pickerOpen && ctx->pickerHover < 0) {
-            for (int h = 0; h < SRC_COUNT; h++) {
-                if (ctx->triggerEdge[h]) {
-                    ctx->pickerOpen = 0;
-                }
-            }
-        }
-    }
-    else if (hover == HOVER_ENVBUTTON) {
-        ctx->envButtonHot = 1;
-        if (ctx->triggerEdge[hand]) {
-            ctx->pickerOpen = 1;
-        }
     }
 
     // One line that says whether gaze is tracking, whether it is the thing
@@ -4053,11 +4106,10 @@ Java_com_limelight_binding_video_XrRenderer_nativeUpdateInput(JNIEnv* env, jobje
         return;
     }
 
-    // The bar, the button and the picker all sit off the picture, so pointing
-    // at them must not drag the host cursor to the edge
+    // The bar sits off the picture, so pointing at it must not drag the host
+    // cursor to the edge
     int hit = (hover == HOVER_SCREEN || hover == HOVER_CORNER) && hand != SRC_GAZE;
-    if ((hover == HOVER_BAR || hover == HOVER_ENVBUTTON || hover == HOVER_PICKER
-            || hover == HOVER_HALO) && headValid && hand >= 0) {
+    if ((hover == HOVER_BAR || hover == HOVER_HALO) && headValid && hand >= 0) {
         Vec3 end = furniturePoint(ctx, hover, hitU[hand], hitV[hand], screenPose,
                                   height, radius, curved);
         ctx->beamStart = aimPoses[hand].position;
@@ -4149,7 +4201,6 @@ Java_com_limelight_binding_video_XrRenderer_nativeUpdateInput(JNIEnv* env, jobje
     }
 
     writeInputPose(ctx, out);
-    out[IN_PICKER_PICK] = (float)ctx->pickerPick;
     (*env)->SetFloatArrayRegion(env, outArr, 0, IN_SLOTS, out);
 }
 
@@ -4211,8 +4262,6 @@ static void pollCaptureRequest(XrCtx* ctx) {
     // Tenths of a second
     propScaled(PROP_POINTER_WAKE, &ctx->pointerWake, 0.1f, 100);
     propScaled(PROP_POINTER_SLEEP, &ctx->pointerSleep, 0.1f, 600);
-    // Metres. Zero is the infinite sphere the layer starts out as.
-    propScaled(PROP_ENV_RADIUS, &ctx->envRadius, 1.0f, 200);
 
     if (ctx->captureDir[0] == '\0') {
         return;
@@ -4596,115 +4645,35 @@ static void renderVideoFrame(XrCtx* ctx, const float* texMatrix, float separatio
     ctx->everRendered = 1;
 }
 
-// The thumbnail grid and the button that opens it, both drawn as Bitmaps in
-// Java. Same frame loop rule as the rest of the art. Flipped on the way in,
-// since a Bitmap runs top down and a texture does not.
+// The whole icon strip, drawn as one Bitmap in Java (one OUTLINE_TEX-wide
+// cell per TOPBAR_ITEM_COUNT item) and uploaded whole. Flipped on the way
+// in, since a Bitmap runs top down and a texture does not.
 JNIEXPORT void JNICALL
-Java_com_limelight_binding_video_XrRenderer_nativeUploadPicker(JNIEnv* env, jobject thiz,
-                                                               jlong handle, jobject grid,
-                                                               jobject button) {
+Java_com_limelight_binding_video_XrRenderer_nativeUploadTopBarArt(JNIEnv* env, jobject thiz,
+                                                                   jlong handle, jobject strip) {
+    XrCtx* ctx = (XrCtx*)(intptr_t)handle;
+    if (ctx == NULL || strip == NULL) {
+        return;
+    }
+    const unsigned char* px = (*env)->GetDirectBufferAddress(env, strip);
+    if (px != NULL) {
+        ctx->topBarReady = uploadFlipped(ctx, ctx->topBarSwapchain, ctx->topBarImages, px,
+                                         TOPBAR_TEX_W, TOPBAR_TEX_H);
+    }
+    LOGI("top bar art %s", ctx->topBarReady ? "ready" : "missing");
+}
+
+// Passthrough level restored from preferences, applied once before the first
+// frame so the dim layer starts at the level the user left it on, not the
+// 1.0 default.
+JNIEXPORT void JNICALL
+Java_com_limelight_binding_video_XrRenderer_nativeSetPassthroughLevel(JNIEnv* env, jobject thiz,
+                                                                       jlong handle, jfloat level) {
     XrCtx* ctx = (XrCtx*)(intptr_t)handle;
     if (ctx == NULL) {
         return;
     }
-    if (grid != NULL) {
-        const unsigned char* px = (*env)->GetDirectBufferAddress(env, grid);
-        if (px != NULL) {
-            ctx->pickerReady = uploadFlipped(ctx, ctx->pickerSwapchain, ctx->pickerImages,
-                                             px, PICKER_TEX_W, PICKER_TEX_H);
-        }
-    }
-    if (button != NULL) {
-        const unsigned char* px = (*env)->GetDirectBufferAddress(env, button);
-        if (px != NULL) {
-            ctx->envButtonReady = uploadFlipped(ctx, ctx->envButtonSwapchain,
-                                                ctx->envButtonImages, px,
-                                                OUTLINE_TEX, OUTLINE_TEX);
-        }
-    }
-    LOGI("picker art %s, button %s", ctx->pickerReady ? "ready" : "missing",
-         ctx->envButtonReady ? "ready" : "missing");
-}
-
-// Which cell the picker is showing as chosen, so it survives a restart
-JNIEXPORT void JNICALL
-Java_com_limelight_binding_video_XrRenderer_nativeSetEnvironment(JNIEnv* env, jobject thiz,
-                                                                 jlong handle, jint choice,
-                                                                 jboolean backgroundOn) {
-    XrCtx* ctx = (XrCtx*)(intptr_t)handle;
-    if (ctx == NULL) {
-        return;
-    }
-    ctx->pickerChoice = choice;
-    ctx->backgroundEnabled = backgroundOn;
-}
-
-// The 360 photo, uploaded once from the frame loop. Same rule as the rest of
-// the art: a swapchain image cannot be waited on before the session runs.
-JNIEXPORT void JNICALL
-Java_com_limelight_binding_video_XrRenderer_nativeUploadBackground(JNIEnv* env, jobject thiz,
-                                                                   jlong handle, jobject buffer,
-                                                                   jint width, jint height) {
-    XrCtx* ctx = (XrCtx*)(intptr_t)handle;
-    if (ctx == NULL || buffer == NULL || width <= 0 || height <= 0) {
-        return;
-    }
-    if (!ctx->equirectSupported) {
-        LOGW("no equirect layer support, skipping the background");
-        return;
-    }
-
-    const unsigned char* px = (const unsigned char*)(*env)->GetDirectBufferAddress(env, buffer);
-    if (px == NULL) {
-        return;
-    }
-
-    // Switching environment reuses the swapchain, since every one of them is
-    // the same size. Only a different size needs a new one.
-    if (ctx->backgroundSwapchain != XR_NULL_HANDLE
-            && (ctx->backgroundWidth != width || ctx->backgroundHeight != height)) {
-        xrDestroySwapchain(ctx->backgroundSwapchain);
-        ctx->backgroundSwapchain = XR_NULL_HANDLE;
-        free(ctx->backgroundImages);
-        ctx->backgroundImages = NULL;
-        ctx->backgroundReady = 0;
-    }
-
-    if (ctx->backgroundSwapchain != XR_NULL_HANDLE) {
-        ctx->backgroundReady = uploadFlipped(ctx, ctx->backgroundSwapchain,
-                                             ctx->backgroundImages, px, width, height);
-        return;
-    }
-
-    XrSwapchainCreateInfo info = { XR_TYPE_SWAPCHAIN_CREATE_INFO };
-    info.usageFlags = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT | XR_SWAPCHAIN_USAGE_SAMPLED_BIT;
-    info.format = ctx->swapchainFormat;
-    info.sampleCount = 1;
-    info.width = width;
-    info.height = height;
-    info.faceCount = 1;
-    info.arraySize = 1;
-    info.mipCount = 1;
-    if (!checkXr(xrCreateSwapchain(ctx->session, &info, &ctx->backgroundSwapchain),
-                 "create background swapchain")) {
-        ctx->backgroundSwapchain = XR_NULL_HANDLE;
-        return;
-    }
-
-    xrEnumerateSwapchainImages(ctx->backgroundSwapchain, 0, &ctx->backgroundImageCount, NULL);
-    ctx->backgroundImages = calloc(ctx->backgroundImageCount, sizeof(XrSwapchainImageOpenGLESKHR));
-    for (uint32_t i = 0; i < ctx->backgroundImageCount; i++) {
-        ctx->backgroundImages[i].type = XR_TYPE_SWAPCHAIN_IMAGE_OPENGL_ES_KHR;
-    }
-    xrEnumerateSwapchainImages(ctx->backgroundSwapchain, ctx->backgroundImageCount,
-                               &ctx->backgroundImageCount,
-                               (XrSwapchainImageBaseHeader*)ctx->backgroundImages);
-
-    ctx->backgroundReady = uploadFlipped(ctx, ctx->backgroundSwapchain, ctx->backgroundImages,
-                                         px, width, height);
-    ctx->backgroundWidth = width;
-    ctx->backgroundHeight = height;
-    LOGI("background %dx%d %s", width, height, ctx->backgroundReady ? "ready" : "failed");
+    ctx->passthroughLevel = level < 0.0f ? 0.0f : (level > 1.0f ? 1.0f : level);
 }
 
 // Puts back a placement saved from a previous session. Marking the sliders as
@@ -4867,55 +4836,59 @@ Java_com_limelight_binding_video_XrRenderer_nativeEndFrame(JNIEnv* env, jobject 
     endInfo.environmentBlendMode = (ctx->passthrough && ctx->alphaBlendSupported)
             ? XR_ENVIRONMENT_BLEND_MODE_ALPHA_BLEND : XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
 
-    XrCompositionLayerEquirect2KHR backgroundLayer;
     XrCompositionLayerQuad quadLayers[2];
     XrCompositionLayerCylinderKHR cylLayers[2];
     XrCompositionLayerQuad overlayLayer;
     XrCompositionLayerQuad beamLayer;
     XrCompositionLayerQuad dotLayer;
     XrCompositionLayerQuad handleLayer;
-    XrCompositionLayerQuad envButtonLayer;
-    XrCompositionLayerQuad pickerLayer;
-    XrCompositionLayerQuad outlineLayers[2];
     XrCompositionLayerQuad prodQuadLayers[PRODUCTIVITY_SCREEN_COUNT];
-    XrCompositionLayerQuad prodMenuLayers[PRODUCTIVITY_MENU_ITEM_COUNT];
+    XrCompositionLayerQuad topBarLayer;
+    XrCompositionLayerQuad sliderTrackLayer;
+    XrCompositionLayerQuad sliderThumbLayer;
+    XrCompositionLayerEquirect2KHR dimLayer;
     const XrCompositionLayerBaseHeader* layers[16];
     uint32_t layerCount = 0;
 
-    // Submitted first so everything else sits in front of it. Passthrough wants
-    // the room instead, so the two are mutually exclusive.
-    if (ctx->backgroundReady && ctx->backgroundEnabled && !ctx->passthrough) {
-        memset(&backgroundLayer, 0, sizeof(backgroundLayer));
-        backgroundLayer.type = XR_TYPE_COMPOSITION_LAYER_EQUIRECT2_KHR;
-        backgroundLayer.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
-        backgroundLayer.subImage.swapchain = ctx->backgroundSwapchain;
-        backgroundLayer.subImage.imageRect.offset.x = 0;
-        backgroundLayer.subImage.imageRect.offset.y = 0;
-        backgroundLayer.subImage.imageRect.extent.width = ctx->backgroundWidth;
-        backgroundLayer.subImage.imageRect.extent.height = ctx->backgroundHeight;
-        backgroundLayer.subImage.imageArrayIndex = 0;
-        // World locked, even when the screen is head locked, or the environment
-        // would swing about with the viewer
-        backgroundLayer.space = ctx->localSpace;
-        backgroundLayer.pose.orientation.w = 1.0f;
-        // A finite sphere is what gives the room a size. At zero the layer is
-        // infinitely far, so leaning about moves nothing and the eye reads it
-        // as vast. Bring it in and the parallax says how big it really is.
-        backgroundLayer.radius = ctx->envRadius;
-        backgroundLayer.centralHorizontalAngle = 6.2831853f;
-        // Width covers the full turn, so the vertical reach follows the aspect
-        // ratio. A 2:1 image fills the sphere, anything wider leaves the zenith
-        // and nadir empty rather than stretching to cover them.
-        float halfV = (float)ctx->backgroundHeight / (float)ctx->backgroundWidth * 3.1415927f;
-        if (halfV > 1.5707963f) {
-            halfV = 1.5707963f;
+    // ctx->passthrough drives the blend mode above; the dim layer below is a
+    // separate, independent full-surround occlusion the brightness slider
+    // controls, layered behind everything else.
+    if (ctx->equirectSupported
+            && (!ctx->dimUploadedValid
+                || fabsf(ctx->dimUploadedLevel - ctx->passthroughLevel) > 0.001f)) {
+        unsigned char px[DIM_TEX * DIM_TEX * 4];
+        unsigned char alpha = (unsigned char)((1.0f - ctx->passthroughLevel) * 255.0f + 0.5f);
+        for (int i = 0; i < DIM_TEX * DIM_TEX; i++) {
+            px[i * 4 + 0] = 0;
+            px[i * 4 + 1] = 0;
+            px[i * 4 + 2] = 0;
+            px[i * 4 + 3] = alpha;
         }
-        backgroundLayer.upperVerticalAngle = halfV;
-        backgroundLayer.lowerVerticalAngle = -halfV;
-        layers[layerCount++] = (const XrCompositionLayerBaseHeader*)&backgroundLayer;
+        ctx->dimReady = uploadArt(ctx, ctx->dimSwapchain, ctx->dimImages, px, DIM_TEX, DIM_TEX);
+        ctx->dimUploadedLevel = ctx->passthroughLevel;
+        ctx->dimUploadedValid = 1;
     }
 
     if (ctx->everRendered && ctx->shouldRender) {
+      if (ctx->dimReady && ctx->equirectSupported) {
+        memset(&dimLayer, 0, sizeof(dimLayer));
+        dimLayer.type = XR_TYPE_COMPOSITION_LAYER_EQUIRECT2_KHR;
+        dimLayer.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
+        dimLayer.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
+        dimLayer.space = space;
+        dimLayer.subImage.swapchain = ctx->dimSwapchain;
+        dimLayer.subImage.imageRect.offset.x = 0;
+        dimLayer.subImage.imageRect.offset.y = 0;
+        dimLayer.subImage.imageRect.extent.width = DIM_TEX;
+        dimLayer.subImage.imageRect.extent.height = DIM_TEX;
+        dimLayer.subImage.imageArrayIndex = 0;
+        dimLayer.pose.orientation.w = 1.0f;
+        dimLayer.radius = 0.0f;
+        dimLayer.centralHorizontalAngle = 6.2831853f;
+        dimLayer.upperVerticalAngle = 1.5707963f;
+        dimLayer.lowerVerticalAngle = -1.5707963f;
+        layers[layerCount++] = (const XrCompositionLayerBaseHeader*)&dimLayer;
+      }
       if (ctx->productivityMode) {
         // Phase 1: N flat mono screens, fixed default arrangement, no
         // interaction yet (no beam/handles/picker/background - those are
@@ -4944,30 +4917,6 @@ Java_com_limelight_binding_video_XrRenderer_nativeEndFrame(JNIEnv* env, jobject 
             quad->size.width = PRODUCTIVITY_SCREEN_WIDTH_M;
             quad->size.height = quadHeight;
             layers[layerCount++] = (const XrCompositionLayerBaseHeader*)quad;
-        }
-
-        // Top menu bar. Reuses the env-button swapchain/art slot (Gaming's
-        // own use of it never runs in this branch) - see
-        // nativeUploadPicker's button path. Only the exit module exists so
-        // far; more slots are PRODUCTIVITY_MENU_ITEM_COUNT away.
-        if (ctx->envButtonReady) {
-            XrCompositionLayerQuad* menu = &prodMenuLayers[PRODUCTIVITY_MENU_EXIT_INDEX];
-            memset(menu, 0, sizeof(*menu));
-            menu->type = XR_TYPE_COMPOSITION_LAYER_QUAD;
-            menu->layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
-            menu->eyeVisibility = XR_EYE_VISIBILITY_BOTH;
-            menu->subImage.swapchain = ctx->envButtonSwapchain;
-            menu->subImage.imageRect.offset.x = 0;
-            menu->subImage.imageRect.offset.y = 0;
-            menu->subImage.imageRect.extent.width = OUTLINE_TEX;
-            menu->subImage.imageRect.extent.height = OUTLINE_TEX;
-            menu->subImage.imageArrayIndex = 0;
-            menu->space = space;
-            menu->pose = productivityMenuItemPose(PRODUCTIVITY_MENU_EXIT_INDEX,
-                                                  PRODUCTIVITY_MENU_ITEM_COUNT);
-            menu->size.width = PRODUCTIVITY_MENU_ITEM_SIZE_M;
-            menu->size.height = PRODUCTIVITY_MENU_ITEM_SIZE_M;
-            layers[layerCount++] = (const XrCompositionLayerBaseHeader*)menu;
         }
       } else {
         int viewCount = stereo ? 2 : 1;
@@ -5058,9 +5007,7 @@ Java_com_limelight_binding_video_XrRenderer_nativeEndFrame(JNIEnv* env, jobject 
             layers[layerCount++] = (const XrCompositionLayerBaseHeader*)&overlayLayer;
         }
 
-        // The bar and the environment button share a hover area, so reaching
-        // for one keeps the other on screen rather than swapping them
-        int barArea = ctx->hoverKind == HOVER_BAR || ctx->hoverKind == HOVER_ENVBUTTON;
+        int barArea = ctx->hoverKind == HOVER_BAR;
 
         // Move bar and resize corner, shown only while the ray is over them.
         // Both live in the screen's own frame, so they travel with it.
@@ -5112,104 +5059,6 @@ Java_com_limelight_binding_video_XrRenderer_nativeEndFrame(JNIEnv* env, jobject 
             handleLayer.size.width = sizeW;
             handleLayer.size.height = sizeH;
             layers[layerCount++] = (const XrCompositionLayerBaseHeader*)&handleLayer;
-        }
-
-        // The button that opens the environment grid, left of the move bar.
-        // Stays up while the grid is open so it reads as the thing that
-        // opened it.
-        if (ctx->envButtonReady && (barArea || ctx->pickerOpen)) {
-            Vec3 local;
-            float side;
-            envButtonPlacement(ctx, screenHeight, &local, &side);
-            Vec3 offset = quatRotate(screenPose.orientation, local);
-
-            memset(&envButtonLayer, 0, sizeof(envButtonLayer));
-            envButtonLayer.type = XR_TYPE_COMPOSITION_LAYER_QUAD;
-            envButtonLayer.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
-            envButtonLayer.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
-            envButtonLayer.subImage.swapchain = ctx->envButtonSwapchain;
-            envButtonLayer.subImage.imageRect.offset.x = 0;
-            envButtonLayer.subImage.imageRect.offset.y = 0;
-            envButtonLayer.subImage.imageRect.extent.width = OUTLINE_TEX;
-            envButtonLayer.subImage.imageRect.extent.height = OUTLINE_TEX;
-            envButtonLayer.subImage.imageArrayIndex = 0;
-            envButtonLayer.space = space;
-            envButtonLayer.pose.orientation = screenPose.orientation;
-            envButtonLayer.pose.position.x = screenPose.position.x + offset.x;
-            envButtonLayer.pose.position.y = screenPose.position.y + offset.y;
-            envButtonLayer.pose.position.z = screenPose.position.z + offset.z;
-            // Grows a little when the ray is on it, which is the only feedback
-            // a quad layer can give without a second texture
-            float scale = ctx->envButtonHot ? 1.18f : 1.0f;
-            envButtonLayer.size.width = side * scale;
-            envButtonLayer.size.height = side * scale;
-            layers[layerCount++] = (const XrCompositionLayerBaseHeader*)&envButtonLayer;
-        }
-
-        // The environment grid, floating in front of the screen, with the
-        // hovered and the chosen cell ringed
-        if (ctx->pickerOpen && ctx->pickerReady) {
-            float pickW, pickH;
-            XrPosef pickPose = pickerPose(ctx, &pickW, &pickH);
-
-            memset(&pickerLayer, 0, sizeof(pickerLayer));
-            pickerLayer.type = XR_TYPE_COMPOSITION_LAYER_QUAD;
-            pickerLayer.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
-            pickerLayer.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
-            pickerLayer.subImage.swapchain = ctx->pickerSwapchain;
-            pickerLayer.subImage.imageRect.offset.x = 0;
-            pickerLayer.subImage.imageRect.offset.y = 0;
-            pickerLayer.subImage.imageRect.extent.width = PICKER_TEX_W;
-            pickerLayer.subImage.imageRect.extent.height = PICKER_TEX_H;
-            pickerLayer.subImage.imageArrayIndex = 0;
-            pickerLayer.space = space;
-            pickerLayer.pose = pickPose;
-            pickerLayer.size.width = pickW;
-            pickerLayer.size.height = pickH;
-            layers[layerCount++] = (const XrCompositionLayerBaseHeader*)&pickerLayer;
-
-            if (ctx->outlineReady) {
-                float cellW = pickW / (float)PICKER_COLS;
-                float cellH = pickH / (float)PICKER_ROWS;
-                // Hover rings the cell, the choice sits inside it, so both
-                // read at once when the ray is over what is already selected
-                int marks[2] = { ctx->pickerHover, ctx->pickerChoice };
-                float scales[2] = { 1.0f, 0.84f };
-
-                for (int m = 0; m < 2; m++) {
-                    int cell = marks[m];
-                    if (cell < 0 || cell >= PICKER_CELLS) {
-                        continue;
-                    }
-                    int col = cell % PICKER_COLS;
-                    int row = cell / PICKER_COLS;
-                    Vec3 local;
-                    local.x = ((col + 0.5f) / PICKER_COLS - 0.5f) * pickW;
-                    local.y = (0.5f - (row + 0.5f) / PICKER_ROWS) * pickH;
-                    local.z = 0.004f;
-                    Vec3 offset = quatRotate(pickPose.orientation, local);
-
-                    XrCompositionLayerQuad* mark = &outlineLayers[m];
-                    memset(mark, 0, sizeof(*mark));
-                    mark->type = XR_TYPE_COMPOSITION_LAYER_QUAD;
-                    mark->layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
-                    mark->eyeVisibility = XR_EYE_VISIBILITY_BOTH;
-                    mark->subImage.swapchain = ctx->outlineSwapchain;
-                    mark->subImage.imageRect.offset.x = 0;
-                    mark->subImage.imageRect.offset.y = 0;
-                    mark->subImage.imageRect.extent.width = OUTLINE_TEX;
-                    mark->subImage.imageRect.extent.height = OUTLINE_TEX;
-                    mark->subImage.imageArrayIndex = 0;
-                    mark->space = space;
-                    mark->pose.orientation = pickPose.orientation;
-                    mark->pose.position.x = pickPose.position.x + offset.x;
-                    mark->pose.position.y = pickPose.position.y + offset.y;
-                    mark->pose.position.z = pickPose.position.z + offset.z;
-                    mark->size.width = cellW * scales[m];
-                    mark->size.height = cellH * scales[m];
-                    layers[layerCount++] = (const XrCompositionLayerBaseHeader*)mark;
-                }
-            }
         }
 
         // Laser and cursor, submitted last so they sit over the picture. Two
@@ -5298,6 +5147,71 @@ Java_com_limelight_binding_video_XrRenderer_nativeEndFrame(JNIEnv* env, jobject 
                 dotLayer.size.height = 0.022f;
                 layers[layerCount++] = (const XrCompositionLayerBaseHeader*)&dotLayer;
             }
+        }
+      }
+
+      // Top bar: exit + brightness, one shared module for both modes (see
+      // topBarPose()). Always shown, same as Productivity Mode's original -
+      // it is not a hover-revealed handle like the bottom move bar.
+      if (ctx->topBarReady) {
+        XrPosef barPose = topBarPose(ctx);
+        memset(&topBarLayer, 0, sizeof(topBarLayer));
+        topBarLayer.type = XR_TYPE_COMPOSITION_LAYER_QUAD;
+        topBarLayer.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
+        topBarLayer.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
+        topBarLayer.subImage.swapchain = ctx->topBarSwapchain;
+        topBarLayer.subImage.imageRect.offset.x = 0;
+        topBarLayer.subImage.imageRect.offset.y = 0;
+        topBarLayer.subImage.imageRect.extent.width = TOPBAR_TEX_W;
+        topBarLayer.subImage.imageRect.extent.height = TOPBAR_TEX_H;
+        topBarLayer.subImage.imageArrayIndex = 0;
+        topBarLayer.space = space;
+        topBarLayer.pose = barPose;
+        topBarLayer.size.width = TOPBAR_WIDTH_M + TOPBAR_BG_MARGIN_M * 2.0f;
+        topBarLayer.size.height = TOPBAR_ITEM_SIZE_M + TOPBAR_BG_MARGIN_M * 2.0f;
+        layers[layerCount++] = (const XrCompositionLayerBaseHeader*)&topBarLayer;
+
+        if (ctx->sliderOpen && ctx->sliderArtReady) {
+            XrPosef trackPose = topBarSliderPose(ctx);
+            memset(&sliderTrackLayer, 0, sizeof(sliderTrackLayer));
+            sliderTrackLayer.type = XR_TYPE_COMPOSITION_LAYER_QUAD;
+            sliderTrackLayer.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
+            sliderTrackLayer.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
+            sliderTrackLayer.subImage.swapchain = ctx->sliderTrackSwapchain;
+            sliderTrackLayer.subImage.imageRect.offset.x = 0;
+            sliderTrackLayer.subImage.imageRect.offset.y = 0;
+            sliderTrackLayer.subImage.imageRect.extent.width = SLIDER_TRACK_TEX_W;
+            sliderTrackLayer.subImage.imageRect.extent.height = SLIDER_TRACK_TEX_H;
+            sliderTrackLayer.subImage.imageArrayIndex = 0;
+            sliderTrackLayer.space = space;
+            sliderTrackLayer.pose = trackPose;
+            sliderTrackLayer.size.width = SLIDER_TRACK_WIDTH_M;
+            sliderTrackLayer.size.height = SLIDER_TRACK_HEIGHT_M;
+            layers[layerCount++] = (const XrCompositionLayerBaseHeader*)&sliderTrackLayer;
+
+            // Placement only - the thumb's own art never changes, so dragging
+            // it costs nothing beyond this per-frame pose update.
+            Vec3 thumbLocal = { (ctx->passthroughLevel - 0.5f) * SLIDER_TRACK_WIDTH_M, 0.0f,
+                                0.002f };
+            Vec3 thumbOffset = quatRotate(trackPose.orientation, thumbLocal);
+            memset(&sliderThumbLayer, 0, sizeof(sliderThumbLayer));
+            sliderThumbLayer.type = XR_TYPE_COMPOSITION_LAYER_QUAD;
+            sliderThumbLayer.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
+            sliderThumbLayer.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
+            sliderThumbLayer.subImage.swapchain = ctx->sliderThumbSwapchain;
+            sliderThumbLayer.subImage.imageRect.offset.x = 0;
+            sliderThumbLayer.subImage.imageRect.offset.y = 0;
+            sliderThumbLayer.subImage.imageRect.extent.width = SLIDER_THUMB_TEX;
+            sliderThumbLayer.subImage.imageRect.extent.height = SLIDER_THUMB_TEX;
+            sliderThumbLayer.subImage.imageArrayIndex = 0;
+            sliderThumbLayer.space = space;
+            sliderThumbLayer.pose.orientation = trackPose.orientation;
+            sliderThumbLayer.pose.position.x = trackPose.position.x + thumbOffset.x;
+            sliderThumbLayer.pose.position.y = trackPose.position.y + thumbOffset.y;
+            sliderThumbLayer.pose.position.z = trackPose.position.z + thumbOffset.z;
+            sliderThumbLayer.size.width = SLIDER_THUMB_SIZE_M;
+            sliderThumbLayer.size.height = SLIDER_THUMB_SIZE_M;
+            layers[layerCount++] = (const XrCompositionLayerBaseHeader*)&sliderThumbLayer;
         }
       }
     }
