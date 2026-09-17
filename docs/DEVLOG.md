@@ -85,6 +85,46 @@ identifiers and confirming the file still compiled with
 native/compiled code, "I removed X" is a claim to verify with a real
 build, not report from having read the diff.
 
+## Third top-bar module: screen curvature, made live-adjustable in-VR
+
+Added a curve slider to the top bar, same pattern as brightness: tap the
+icon, drag right for a tighter (~180°) wrap, left for flat. This exposed a
+real pre-existing constraint - `curvature` was already a feature (a flat
+Settings-only seekbar driving a cylinder-vs-quad screen layer,
+`XR_TYPE_COMPOSITION_LAYER_CYLINDER_KHR`), but it lived entirely as a
+per-frame Java parameter threaded through `nativeUpdateInput`/
+`nativeEndFrame`/`updatePlacement`. Made it native-owned live state instead
+(`ctx->curveAmount`, mirroring `ctx->passthroughLevel`) so the in-VR slider
+has something to actually mutate - removed the parameter from all three
+function signatures, seeded from the existing `seekbar_vr_curvature`
+preference at session start (`nativeSetCurvature`, called once, same as
+`nativeSetPassthroughLevel`), written back to that *same* preference key
+(not a new one) so the flat Settings screen and the in-VR slider stay one
+source of truth.
+
+**One real wrinkle, worth the note**: `updatePlacement()`'s existing
+curvature-seed formula also resets screen position/pose (it's the same
+branch that places the screen on first launch or when the flat Settings
+distance/size sliders move). Dragging the new in-VR curve slider must
+never snap the screen back to the default position, so it writes
+`ctx->screenRadius` directly instead, using `ctx->lastDistance` (already
+tracked every frame regardless) rather than going through that reseed
+path.
+
+**The slider itself is now shared infrastructure, not brightness-specific.**
+`ctx->sliderOpen` (bool) became `ctx->openSlider` (an item index, or
+`TOPBAR_NO_SLIDER`) plus `ctx->grabSliderTarget` (a snapshot taken when a
+drag starts, so it keeps controlling the same value even if the other hand
+touches a different icon mid-drag) - the track/thumb chrome and the
+open/close/drag state machine are the same for both modules, just
+retargeted by index. Adding a fourth slider-based module later is a
+two-line change (a new index constant, a case in `applySliderValue()`/
+`markSliderDirty()`), not a new subsystem.
+
+Full app build clean, installed and launches with no crash. Same caveat
+as everything else in this doc: the actual on-device drag feel hasn't
+been checked yet.
+
 ## Not yet verified / next up
 
 - The actual on-device feel of the top bar and slider in both modes (needs

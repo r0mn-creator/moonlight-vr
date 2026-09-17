@@ -120,7 +120,10 @@
 // Reuses slot 17 (the environment-picker's old pick slot, retired with it) -
 // see IN_PASSTHROUGH_LEVEL above.
 #define IN_PASSTHROUGH_DIRTY 17
-#define IN_SLOTS    26
+// Screen curvature slider, same one-shot pattern as IN_PASSTHROUGH_*
+#define IN_CURVE_LEVEL 26
+#define IN_CURVE_DIRTY 27
+#define IN_SLOTS    28
 
 // Grab thresholds for the grip, and the range a resize is allowed to reach
 #define SCREEN_MIN_WIDTH 0.8f
@@ -247,9 +250,12 @@
 #define PRODUCTIVITY_BAR_Y_OFFSET_M 0.50f
 #define TOPBAR_ITEM_SIZE_M 0.10f
 #define TOPBAR_ITEM_GAP_M 0.03f
-#define TOPBAR_ITEM_COUNT 2
+#define TOPBAR_ITEM_COUNT 3
 #define TOPBAR_EXIT_INDEX 0
 #define TOPBAR_BRIGHTNESS_INDEX 1
+#define TOPBAR_CURVE_INDEX 2
+// ctx->openSlider when no slider is open - not a real item index
+#define TOPBAR_NO_SLIDER (-1)
 #define TOPBAR_WIDTH_M (TOPBAR_ITEM_COUNT * TOPBAR_ITEM_SIZE_M \
                         + (TOPBAR_ITEM_COUNT - 1) * TOPBAR_ITEM_GAP_M)
 // Gaming's screen is user-resizable (unlike Productivity Mode's fixed-size
@@ -267,8 +273,9 @@
 #define TOPBAR_TEX_W (OUTLINE_TEX * TOPBAR_ITEM_COUNT + TOPBAR_TEX_MARGIN * 2)
 #define TOPBAR_TEX_H (OUTLINE_TEX + TOPBAR_TEX_MARGIN * 2)
 
-// Passthrough brightness slider, opened by tapping the brightness icon.
-// Right = full passthrough (default), left = full black.
+// Shared slider chrome - one track/thumb, repositioned above whichever
+// item opened it (ctx->openSlider). Brightness: right = full passthrough
+// (default), left = full black. Curve: right = ~180 degree wrap, left = flat.
 #define SLIDER_TRACK_WIDTH_M 0.28f
 #define SLIDER_TRACK_HEIGHT_M 0.03f
 #define SLIDER_THUMB_SIZE_M 0.045f
@@ -580,7 +587,17 @@ typedef struct {
     // grabHand above rather than adding a parallel pair of fields.
     float passthroughLevel;
     int passthroughLevelDirty;
-    int sliderOpen;
+    // 0 = flat, 1 = ~180 degree wrap - drives ctx->screenRadius directly
+    // (see updateTopBar()), independent of updatePlacement()'s own seed so
+    // dragging it never resets screen position/pose.
+    float curveAmount;
+    int curveAmountDirty;
+    // TOPBAR_NO_SLIDER, or the index of the item whose slider is open
+    int openSlider;
+    // Snapshot of openSlider taken when a drag starts, so the drag keeps
+    // controlling the same value even if openSlider is somehow touched by
+    // the other hand mid-drag
+    int grabSliderTarget;
 
     // Hover state, read by the frame loop to decide which handle to draw
     int hoverKind;
@@ -2734,7 +2751,7 @@ static int uploadPointerArt(XrCtx* ctx) {
 
 // The sliders place the screen, the grab moves it from there. Moving either
 // slider is taken as the user asking for the placement back.
-static void updatePlacement(XrCtx* ctx, float distance, float quadWidth, float curvature) {
+static void updatePlacement(XrCtx* ctx, float distance, float quadWidth) {
     int sliderMoved = ctx->sliderSeen
             && (fabsf(distance - ctx->lastDistance) > 1e-4f
                 || fabsf(quadWidth - ctx->lastQuadWidth) > 1e-4f);
@@ -2745,8 +2762,11 @@ static void updatePlacement(XrCtx* ctx, float distance, float quadWidth, float c
         ctx->screenPose.position.z = -distance;
         ctx->screenWidth = quadWidth;
         // Radius runs from 4x distance (slightly curved) down to the distance
-        // itself (wrapped around the viewer) as curvature rises
-        ctx->screenRadius = distance * (1.0f + 3.0f * (1.0f - curvature));
+        // itself (wrapped around the viewer) as curveAmount rises. Only the
+        // seed here - live changes from the top bar's curve slider go
+        // straight to ctx->screenRadius instead (see applySliderValue()),
+        // since this whole branch also resets screen position/pose.
+        ctx->screenRadius = distance * (1.0f + 3.0f * (1.0f - ctx->curveAmount));
         ctx->placementValid = 1;
         ctx->grabMode = GRAB_NONE;
         ctx->poseDirty = 1;
@@ -2817,8 +2837,8 @@ static XrPosef topBarItemPose(XrCtx* ctx, int index, int count) {
 
 // Above the brightness icon specifically, not the bar centre - it should
 // read as belonging to the icon that opened it.
-static XrPosef topBarSliderPose(XrCtx* ctx) {
-    XrPosef pose = topBarItemPose(ctx, TOPBAR_BRIGHTNESS_INDEX, TOPBAR_ITEM_COUNT);
+static XrPosef topBarSliderPose(XrCtx* ctx, int item) {
+    XrPosef pose = topBarItemPose(ctx, item, TOPBAR_ITEM_COUNT);
     Vec3 local = { 0.0f, TOPBAR_ITEM_SIZE_M * 0.5f + SLIDER_GAP_M + SLIDER_TRACK_HEIGHT_M * 0.5f,
                    -0.005f };
     Vec3 up = quatRotate(pose.orientation, local);
@@ -2851,6 +2871,11 @@ static void writeInputPose(XrCtx* ctx, float* out) {
         ctx->passthroughLevelDirty = 0;
         out[IN_PASSTHROUGH_DIRTY] = 1.0f;
         out[IN_PASSTHROUGH_LEVEL] = ctx->passthroughLevel;
+    }
+    if (ctx->curveAmountDirty) {
+        ctx->curveAmountDirty = 0;
+        out[IN_CURVE_DIRTY] = 1.0f;
+        out[IN_CURVE_LEVEL] = ctx->curveAmount;
     }
 }
 
@@ -3157,6 +3182,9 @@ Java_com_limelight_binding_video_XrRenderer_nativeInit(JNIEnv* env, jobject thiz
     // value - a struct fresh out of calloc would otherwise read as 0.0 (full
     // black) for the handful of frames before Java's restore call lands.
     ctx->passthroughLevel = 1.0f;
+    // 0 (TOPBAR_EXIT_INDEX) is a real item, so this can't rely on calloc's
+    // zero-init like most flags here
+    ctx->openSlider = TOPBAR_NO_SLIDER;
     (*env)->GetJavaVM(env, &ctx->vm);
     ctx->activity = (*env)->NewGlobalRef(env, activity);
 
@@ -3606,18 +3634,43 @@ static void computeSpatialAudio(XrCtx* ctx, XrPosef screenPose, float referenceD
 // needs the whole array rather than just whichever hand is hovering right
 // now, so a release is still caught even if that hand's pose lookup fails
 // this frame - same reasoning as applyGrab().
+// Applies a slider's dragged position to whichever value it controls. Also
+// used to seed the value the instant a drag starts (see the two call sites
+// below), not just on later frames of the drag.
+static void applySliderValue(XrCtx* ctx, int item, float value) {
+    if (item == TOPBAR_BRIGHTNESS_INDEX) {
+        ctx->passthroughLevel = value;
+    }
+    else {
+        ctx->curveAmount = value;
+        // Independent of updatePlacement()'s own seed, on purpose - that
+        // path also resets screen position, which a curve adjustment must
+        // not do. See the field comment on ctx->curveAmount.
+        ctx->screenRadius = ctx->lastDistance * (1.0f + 3.0f * (1.0f - value));
+    }
+}
+
+static void markSliderDirty(XrCtx* ctx, int item) {
+    if (item == TOPBAR_BRIGHTNESS_INDEX) {
+        ctx->passthroughLevelDirty = 1;
+    }
+    else {
+        ctx->curveAmountDirty = 1;
+    }
+}
+
 static int updateTopBar(XrCtx* ctx, XrPosef* aims, const int* valid, float* out) {
     if (ctx->grabMode == GRAB_SLIDER) {
         int h = ctx->grabHand;
         if (!valid[h] || !ctx->triggerDown[h]) {
             ctx->grabMode = GRAB_NONE;
-            ctx->passthroughLevelDirty = 1;
+            markSliderDirty(ctx, ctx->grabSliderTarget);
             return 0;
         }
         float u, v;
-        if (screenProject(aims[h], topBarSliderPose(ctx), SLIDER_TRACK_WIDTH_M,
-                          SLIDER_TRACK_HEIGHT_M, 0.0f, 0, &u, &v)) {
-            ctx->passthroughLevel = u < 0.0f ? 0.0f : (u > 1.0f ? 1.0f : u);
+        if (screenProject(aims[h], topBarSliderPose(ctx, ctx->grabSliderTarget),
+                          SLIDER_TRACK_WIDTH_M, SLIDER_TRACK_HEIGHT_M, 0.0f, 0, &u, &v)) {
+            applySliderValue(ctx, ctx->grabSliderTarget, u < 0.0f ? 0.0f : (u > 1.0f ? 1.0f : u));
         }
         return 1;
     }
@@ -3637,23 +3690,32 @@ static int updateTopBar(XrCtx* ctx, XrPosef* aims, const int* valid, float* out)
             return 1;
         }
 
-        if (screenProject(aims[h], topBarItemPose(ctx, TOPBAR_BRIGHTNESS_INDEX, TOPBAR_ITEM_COUNT),
-                          TOPBAR_ITEM_SIZE_M, TOPBAR_ITEM_SIZE_M, 0.0f, 0, &u, &v)
-                && u >= 0.0f && u <= 1.0f && v >= 0.0f && v <= 1.0f) {
+        int sliderItems[2] = { TOPBAR_BRIGHTNESS_INDEX, TOPBAR_CURVE_INDEX };
+        int hitItem = -1;
+        for (int i = 0; i < 2; i++) {
+            if (screenProject(aims[h], topBarItemPose(ctx, sliderItems[i], TOPBAR_ITEM_COUNT),
+                              TOPBAR_ITEM_SIZE_M, TOPBAR_ITEM_SIZE_M, 0.0f, 0, &u, &v)
+                    && u >= 0.0f && u <= 1.0f && v >= 0.0f && v <= 1.0f) {
+                hitItem = sliderItems[i];
+                break;
+            }
+        }
+        if (hitItem >= 0) {
             if (ctx->triggerEdge[h]) {
-                ctx->sliderOpen = !ctx->sliderOpen;
+                ctx->openSlider = (ctx->openSlider == hitItem) ? TOPBAR_NO_SLIDER : hitItem;
                 fireHaptic(ctx, h);
             }
             return 1;
         }
 
-        if (ctx->sliderOpen && ctx->triggerEdge[h]
-                && screenProject(aims[h], topBarSliderPose(ctx), SLIDER_TRACK_WIDTH_M,
-                                 SLIDER_TRACK_HEIGHT_M, 0.0f, 0, &u, &v)
+        if (ctx->openSlider != TOPBAR_NO_SLIDER && ctx->triggerEdge[h]
+                && screenProject(aims[h], topBarSliderPose(ctx, ctx->openSlider),
+                                 SLIDER_TRACK_WIDTH_M, SLIDER_TRACK_HEIGHT_M, 0.0f, 0, &u, &v)
                 && u >= 0.0f && u <= 1.0f && v >= 0.0f && v <= 1.0f) {
             ctx->grabMode = GRAB_SLIDER;
             ctx->grabHand = h;
-            ctx->passthroughLevel = u;
+            ctx->grabSliderTarget = ctx->openSlider;
+            applySliderValue(ctx, ctx->openSlider, u);
             fireHaptic(ctx, h);
             return 1;
         }
@@ -3756,7 +3818,7 @@ static void updateProductivityInput(XrCtx* ctx, jboolean pointerEnabled, float* 
 JNIEXPORT void JNICALL
 Java_com_limelight_binding_video_XrRenderer_nativeUpdateInput(JNIEnv* env, jobject thiz,
                                                               jlong handle, jfloat distance,
-                                                              jfloat quadWidth, jfloat curvature,
+                                                              jfloat quadWidth,
                                                               jboolean headLocked,
                                                               jboolean pointerEnabled,
                                                               jboolean gazeEnabled,
@@ -3822,7 +3884,7 @@ Java_com_limelight_binding_video_XrRenderer_nativeUpdateInput(JNIEnv* env, jobje
 
     XrSpace space = headLocked ? ctx->viewSpace : ctx->localSpace;
     float height = ctx->screenWidth * (float)ctx->videoHeight / (float)ctx->videoWidth;
-    int curved = curvature > 0.01f && ctx->cylinderSupported;
+    int curved = ctx->curveAmount > 0.01f && ctx->cylinderSupported;
     float radius = ctx->screenRadius;
     XrPosef screenPose = ctx->screenPose;
 
@@ -4676,6 +4738,19 @@ Java_com_limelight_binding_video_XrRenderer_nativeSetPassthroughLevel(JNIEnv* en
     ctx->passthroughLevel = level < 0.0f ? 0.0f : (level > 1.0f ? 1.0f : level);
 }
 
+// Curve amount restored from preferences, applied once before the first
+// frame - updatePlacement()'s first-ever seed reads ctx->curveAmount to
+// compute the starting screenRadius.
+JNIEXPORT void JNICALL
+Java_com_limelight_binding_video_XrRenderer_nativeSetCurvature(JNIEnv* env, jobject thiz,
+                                                                 jlong handle, jfloat amount) {
+    XrCtx* ctx = (XrCtx*)(intptr_t)handle;
+    if (ctx == NULL) {
+        return;
+    }
+    ctx->curveAmount = amount < 0.0f ? 0.0f : (amount > 1.0f ? 1.0f : amount);
+}
+
 // Puts back a placement saved from a previous session. Marking the sliders as
 // already seen stops the first frame taking the screen straight back off it.
 JNIEXPORT void JNICALL
@@ -4766,7 +4841,7 @@ JNIEXPORT void JNICALL
 Java_com_limelight_binding_video_XrRenderer_nativeEndFrame(JNIEnv* env, jobject thiz, jlong handle,
                                                            jboolean newFrame, jfloatArray texMatrixArr,
                                                            jfloat distance, jfloat quadWidth,
-                                                           jfloat curvature, jboolean headLocked,
+                                                           jboolean headLocked,
                                                            jfloat separation, jboolean eyeSwap,
                                                            jboolean passthrough) {
     XrCtx* ctx = (XrCtx*)(intptr_t)handle;
@@ -4826,7 +4901,7 @@ Java_com_limelight_binding_video_XrRenderer_nativeEndFrame(JNIEnv* env, jobject 
         uploadPointerArt(ctx);
     }
 
-    updatePlacement(ctx, distance, quadWidth, curvature);
+    updatePlacement(ctx, distance, quadWidth);
     XrPosef screenPose = ctx->screenPose;
     float screenWidth = ctx->screenWidth;
     float screenHeight = screenWidth * aspect;
@@ -4935,7 +5010,7 @@ Java_com_limelight_binding_video_XrRenderer_nativeEndFrame(JNIEnv* env, jobject 
             XrEyeVisibility visibility = !stereo ? XR_EYE_VISIBILITY_BOTH :
                     (eye == 0 ? XR_EYE_VISIBILITY_LEFT : XR_EYE_VISIBILITY_RIGHT);
 
-            if (curvature > 0.01f && ctx->cylinderSupported) {
+            if (ctx->curveAmount > 0.01f && ctx->cylinderSupported) {
                 XrCompositionLayerCylinderKHR* cyl = &cylLayers[eye];
                 memset(cyl, 0, sizeof(*cyl));
                 cyl->type = XR_TYPE_COMPOSITION_LAYER_CYLINDER_KHR;
@@ -5171,8 +5246,10 @@ Java_com_limelight_binding_video_XrRenderer_nativeEndFrame(JNIEnv* env, jobject 
         topBarLayer.size.height = TOPBAR_ITEM_SIZE_M + TOPBAR_BG_MARGIN_M * 2.0f;
         layers[layerCount++] = (const XrCompositionLayerBaseHeader*)&topBarLayer;
 
-        if (ctx->sliderOpen && ctx->sliderArtReady) {
-            XrPosef trackPose = topBarSliderPose(ctx);
+        if (ctx->openSlider != TOPBAR_NO_SLIDER && ctx->sliderArtReady) {
+            XrPosef trackPose = topBarSliderPose(ctx, ctx->openSlider);
+            float sliderValue = ctx->openSlider == TOPBAR_BRIGHTNESS_INDEX
+                    ? ctx->passthroughLevel : ctx->curveAmount;
             memset(&sliderTrackLayer, 0, sizeof(sliderTrackLayer));
             sliderTrackLayer.type = XR_TYPE_COMPOSITION_LAYER_QUAD;
             sliderTrackLayer.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
@@ -5191,7 +5268,7 @@ Java_com_limelight_binding_video_XrRenderer_nativeEndFrame(JNIEnv* env, jobject 
 
             // Placement only - the thumb's own art never changes, so dragging
             // it costs nothing beyond this per-frame pose update.
-            Vec3 thumbLocal = { (ctx->passthroughLevel - 0.5f) * SLIDER_TRACK_WIDTH_M, 0.0f,
+            Vec3 thumbLocal = { (sliderValue - 0.5f) * SLIDER_TRACK_WIDTH_M, 0.0f,
                                 0.002f };
             Vec3 thumbOffset = quatRotate(trackPose.orientation, thumbLocal);
             memset(&sliderThumbLayer, 0, sizeof(sliderThumbLayer));

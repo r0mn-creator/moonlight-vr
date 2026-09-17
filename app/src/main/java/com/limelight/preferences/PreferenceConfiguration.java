@@ -54,7 +54,9 @@ public class PreferenceConfiguration {
     private static final String VR_HEAD_LOCKED_PREF_STRING = "checkbox_vr_head_locked";
     private static final String VR_DISTANCE_PREF_STRING = "seekbar_vr_distance";
     private static final String VR_SCREEN_SIZE_PREF_STRING = "seekbar_vr_screen_size";
-    private static final String VR_CURVATURE_PREF_STRING = "seekbar_vr_curvature";
+    // Also written live by the top bar's curve slider in VR, not just the
+    // flat Settings screen - see XrRenderer.savePassthroughLevel()'s sibling.
+    public static final String VR_CURVATURE_PREF_STRING = "seekbar_vr_curvature";
     private static final String VR_DEPTH_SOURCE_PREF_STRING = "list_vr_depth_source";
     private static final String VR_EYE_SWAP_PREF_STRING = "checkbox_vr_eye_swap";
     private static final String VR_POINTER_PREF_STRING = "checkbox_vr_pointer";

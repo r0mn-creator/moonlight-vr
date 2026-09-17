@@ -140,7 +140,10 @@ public class XrRenderer implements SurfaceTexture.OnFrameAvailableListener {
     // Reuses slot 17 (the environment-picker's old pick slot, retired with
     // it) - see IN_PASSTHROUGH_LEVEL above.
     private static final int IN_PASSTHROUGH_DIRTY = 17;
-    private static final int IN_SLOTS = 26;
+    // Screen curvature slider, same one-shot pattern as IN_PASSTHROUGH_*
+    private static final int IN_CURVE_LEVEL = 26;
+    private static final int IN_CURVE_DIRTY = 27;
+    private static final int IN_SLOTS = 28;
     private static final int POSE_VALUES = 9;
     private final float[] inputState = new float[IN_SLOTS];
     private int heldButtons;
@@ -149,14 +152,15 @@ public class XrRenderer implements SurfaceTexture.OnFrameAvailableListener {
     private InputListener inputListener;
     private Context prefsContext;
 
-    // Top menu bar: exit + brightness, one shared module for both modes (see
-    // topBarPose() natively - the only difference between them is which
-    // screen(s) it floats above). One bitmap, one cell per item, built once
-    // and uploaded whole.
+    // Top menu bar: exit, brightness, curve - one shared module for both
+    // modes (see topBarPose() natively - the only difference between them is
+    // which screen(s) it floats above). One bitmap, one cell per item, built
+    // once and uploaded whole.
     private final AtomicReference<ByteBuffer> pendingTopBarArt = new AtomicReference<>();
-    private static final int TOPBAR_ITEM_COUNT = 2;
+    private static final int TOPBAR_ITEM_COUNT = 3;
     private static final int TOPBAR_EXIT_INDEX = 0;
     private static final int TOPBAR_BRIGHTNESS_INDEX = 1;
+    private static final int TOPBAR_CURVE_INDEX = 2;
     // Matches OUTLINE_TEX in xr_renderer.c - size of one cell in the strip
     private static final int TOPBAR_CELL_TEX = 128;
     // Bleed margin for the background pill's feather - matches
@@ -200,16 +204,17 @@ public class XrRenderer implements SurfaceTexture.OnFrameAvailableListener {
     private native void nativeUnbindDepthContext(long ctx);
     private native int nativeWaitBeginFrame(long ctx);
     private native void nativeEndFrame(long ctx, boolean newFrame, float[] texMatrix,
-                                       float distance, float quadWidth, float curvature,
+                                       float distance, float quadWidth,
                                        boolean headLocked, float separation, boolean eyeSwap,
                                        boolean passthrough);
     private native void nativeUpdateInput(long ctx, float distance, float quadWidth,
-                                          float curvature, boolean headLocked,
+                                          boolean headLocked,
                                           boolean pointerEnabled, boolean gazeEnabled,
                                           float[] out);
     private native void nativeSetScreenPose(long ctx, float[] pose);
     private native void nativeUploadTopBarArt(long ctx, ByteBuffer strip);
     private native void nativeSetPassthroughLevel(long ctx, float level);
+    private native void nativeSetCurvature(long ctx, float amount);
     private native void nativeUploadOverlay(long ctx, ByteBuffer pixels, int width, int height);
     private native float nativeGetWarpGpuMs(long ctx);
     private native void nativeDestroy(long ctx);
@@ -238,6 +243,7 @@ public class XrRenderer implements SurfaceTexture.OnFrameAvailableListener {
                 nativeSetPassthroughLevel(nativeCtx, PreferenceManager
                         .getDefaultSharedPreferences(prefsContext)
                         .getFloat(PreferenceConfiguration.VR_PASSTHROUGH_LEVEL_PREF_STRING, 1.0f));
+                nativeSetCurvature(nativeCtx, prefs.vrCurvature / 100.0f);
 
                 File captureDir = activity.getExternalFilesDir(null);
                 if (captureDir != null) {
@@ -446,7 +452,6 @@ public class XrRenderer implements SurfaceTexture.OnFrameAvailableListener {
     private void runFrameLoop(PreferenceConfiguration prefs) {
         float distance = prefs.vrDistance / 10.0f;
         float quadWidth = prefs.vrScreenSize / 10.0f;
-        float curvature = prefs.vrCurvature / 100.0f;
         boolean headLocked = prefs.vrHeadLocked;
         // Stored as tenths of a percent of frame width
         float separation = prefs.vrStereoSeparation / 1000.0f;
@@ -467,7 +472,7 @@ public class XrRenderer implements SurfaceTexture.OnFrameAvailableListener {
                 continue;
             }
 
-            nativeUpdateInput(nativeCtx, distance, quadWidth, curvature, headLocked,
+            nativeUpdateInput(nativeCtx, distance, quadWidth, headLocked,
                     pointer, gaze, inputState);
             dispatchInput();
 
@@ -531,7 +536,7 @@ public class XrRenderer implements SurfaceTexture.OnFrameAvailableListener {
                 nativeUploadTopBarArt(nativeCtx, topBarArt);
             }
 
-            nativeEndFrame(nativeCtx, newFrame, texMatrix, distance, quadWidth, curvature,
+            nativeEndFrame(nativeCtx, newFrame, texMatrix, distance, quadWidth,
                     headLocked, separation, eyeSwap, true);
         }
     }
@@ -564,6 +569,7 @@ public class XrRenderer implements SurfaceTexture.OnFrameAvailableListener {
         // res/drawable-nodpi/ic_topbar_*.png.
         drawIcon(canvas, R.drawable.ic_topbar_exit, cellRect(TOPBAR_EXIT_INDEX));
         drawIcon(canvas, R.drawable.ic_topbar_brightness, cellRect(TOPBAR_BRIGHTNESS_INDEX));
+        drawIcon(canvas, R.drawable.ic_topbar_curve, cellRect(TOPBAR_CURVE_INDEX));
 
         return strip;
     }
@@ -640,6 +646,10 @@ public class XrRenderer implements SurfaceTexture.OnFrameAvailableListener {
             savePassthroughLevel(inputState[IN_PASSTHROUGH_LEVEL]);
         }
 
+        if (inputState[IN_CURVE_DIRTY] != 0.0f) {
+            saveCurvature(inputState[IN_CURVE_LEVEL]);
+        }
+
         if (inputState[IN_EXIT_PRESSED] != 0.0f && inputListener != null) {
             inputListener.onVrExitRequested();
         }
@@ -712,6 +722,18 @@ public class XrRenderer implements SurfaceTexture.OnFrameAvailableListener {
         }
         PreferenceManager.getDefaultSharedPreferences(prefsContext).edit()
                 .putFloat(PreferenceConfiguration.VR_PASSTHROUGH_LEVEL_PREF_STRING, level)
+                .apply();
+    }
+
+    // Same as savePassthroughLevel(), but this preference is shared with the
+    // flat Settings screen's SeekBarPreference, which stores an int 0-100 -
+    // match that format so either control can move the other's value.
+    private void saveCurvature(float amount) {
+        if (prefsContext == null) {
+            return;
+        }
+        PreferenceManager.getDefaultSharedPreferences(prefsContext).edit()
+                .putInt(PreferenceConfiguration.VR_CURVATURE_PREF_STRING, Math.round(amount * 100.0f))
                 .apply();
     }
 
