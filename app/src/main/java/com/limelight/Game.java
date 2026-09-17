@@ -3064,6 +3064,20 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     }
 
     @Override
+    public void onVrKeyboardToggleRequested() {
+        // toggleKeyboard() calls InputMethodManager directly and is normally
+        // only ever reached from a UI-thread touch gesture - this callback
+        // comes from the render thread instead, so hop back to the UI
+        // thread first, same as onVrExitRequested() does for finish().
+        runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                toggleKeyboard();
+            }
+        });
+    }
+
+    @Override
     public void onPerfUpdate(final String text) {
         // In VR the activity window is not displayed, so the stats go to the
         // renderer, which draws them as a layer inside the session

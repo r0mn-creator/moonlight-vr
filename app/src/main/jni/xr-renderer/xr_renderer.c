@@ -123,7 +123,10 @@
 // Screen curvature slider, same one-shot pattern as IN_PASSTHROUGH_*
 #define IN_CURVE_LEVEL 26
 #define IN_CURVE_DIRTY 27
-#define IN_SLOTS    28
+// Top bar keyboard button, pressed this frame - shows/hides the system
+// soft keyboard, same as the flat-mode gesture already does
+#define IN_KEYBOARD_TOGGLE 28
+#define IN_SLOTS    29
 
 // Grab thresholds for the grip, and the range a resize is allowed to reach
 #define SCREEN_MIN_WIDTH 0.8f
@@ -250,10 +253,11 @@
 #define PRODUCTIVITY_BAR_Y_OFFSET_M 0.50f
 #define TOPBAR_ITEM_SIZE_M 0.10f
 #define TOPBAR_ITEM_GAP_M 0.03f
-#define TOPBAR_ITEM_COUNT 3
+#define TOPBAR_ITEM_COUNT 4
 #define TOPBAR_EXIT_INDEX 0
 #define TOPBAR_BRIGHTNESS_INDEX 1
 #define TOPBAR_CURVE_INDEX 2
+#define TOPBAR_KEYBOARD_INDEX 3
 // ctx->openSlider when no slider is open - not a real item index
 #define TOPBAR_NO_SLIDER (-1)
 #define TOPBAR_WIDTH_M (TOPBAR_ITEM_COUNT * TOPBAR_ITEM_SIZE_M \
@@ -3685,6 +3689,16 @@ static int updateTopBar(XrCtx* ctx, XrPosef* aims, const int* valid, float* out)
                 && u >= 0.0f && u <= 1.0f && v >= 0.0f && v <= 1.0f) {
             if (ctx->triggerEdge[h]) {
                 out[IN_EXIT_PRESSED] = 1.0f;
+                fireHaptic(ctx, h);
+            }
+            return 1;
+        }
+
+        if (screenProject(aims[h], topBarItemPose(ctx, TOPBAR_KEYBOARD_INDEX, TOPBAR_ITEM_COUNT),
+                          TOPBAR_ITEM_SIZE_M, TOPBAR_ITEM_SIZE_M, 0.0f, 0, &u, &v)
+                && u >= 0.0f && u <= 1.0f && v >= 0.0f && v <= 1.0f) {
+            if (ctx->triggerEdge[h]) {
+                out[IN_KEYBOARD_TOGGLE] = 1.0f;
                 fireHaptic(ctx, h);
             }
             return 1;

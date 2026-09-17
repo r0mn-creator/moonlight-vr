@@ -125,6 +125,37 @@ Full app build clean, installed and launches with no crash. Same caveat
 as everything else in this doc: the actual on-device drag feel hasn't
 been checked yet.
 
+## Fourth top-bar module: keyboard toggle - a tap, not a slider
+
+User's own request going in: "let's go big" on adding a way to bring up
+the on-screen keyboard - but with a real insight that made this small
+instead of a from-scratch 3D keyboard: Quest's system IME can appear as an
+overlay inside an immersive session on its own once a key-event-consuming
+view has focus, and this app already has exactly that. Found `Game.java`
+already implements `GameGestures.toggleKeyboard()` (used by the existing
+flat/touch-mode gesture), which just calls
+`InputMethodManager.toggleSoftInput()` - and `onKeyDown()`/`onKeyUp()`
+already route through `KeyboardTranslator` into the same host-keyboard-
+event pipeline a physical Bluetooth keyboard uses, regardless of Gaming vs
+Productivity mode. So the whole feature is: a 4th tap-only bar icon (no
+slider - mirrors Exit's pattern exactly) wired to a new
+`IN_KEYBOARD_TOGGLE` slot → `InputListener.onVrKeyboardToggleRequested()`
+→ `runOnUiThread(this::toggleKeyboard)` (hopped to the UI thread, since
+`toggleKeyboard()` normally only runs from a touch-gesture callback, not
+the render thread this fires from). Zero new text-input plumbing.
+
+Icon is a placeholder (drawn procedurally, simple keyboard glyph) since no
+custom art was provided for this one yet - swap `ic_topbar_keyboard.png`
+whenever.
+
+**Real unverified assumption, flagged explicitly**: that Quest's system
+keyboard actually renders as a visible, legible overlay *within* this
+app's immersive OpenXR session when toggled this way, not just in flat
+2D activities. This is standard behavior for well-behaved immersive
+Android/Quest apps in general, and nothing here should prevent it, but it
+hasn't been seen working in this specific app yet - first thing to check
+alongside the rest of the top bar.
+
 ## Not yet verified / next up
 
 - The actual on-device feel of the top bar and slider in both modes (needs

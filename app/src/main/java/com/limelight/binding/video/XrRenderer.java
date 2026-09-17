@@ -143,7 +143,10 @@ public class XrRenderer implements SurfaceTexture.OnFrameAvailableListener {
     // Screen curvature slider, same one-shot pattern as IN_PASSTHROUGH_*
     private static final int IN_CURVE_LEVEL = 26;
     private static final int IN_CURVE_DIRTY = 27;
-    private static final int IN_SLOTS = 28;
+    // Top bar keyboard button, pressed this frame - shows/hides the system
+    // soft keyboard, same as the flat-mode gesture already does
+    private static final int IN_KEYBOARD_TOGGLE = 28;
+    private static final int IN_SLOTS = 29;
     private static final int POSE_VALUES = 9;
     private final float[] inputState = new float[IN_SLOTS];
     private int heldButtons;
@@ -157,10 +160,11 @@ public class XrRenderer implements SurfaceTexture.OnFrameAvailableListener {
     // which screen(s) it floats above). One bitmap, one cell per item, built
     // once and uploaded whole.
     private final AtomicReference<ByteBuffer> pendingTopBarArt = new AtomicReference<>();
-    private static final int TOPBAR_ITEM_COUNT = 3;
+    private static final int TOPBAR_ITEM_COUNT = 4;
     private static final int TOPBAR_EXIT_INDEX = 0;
     private static final int TOPBAR_BRIGHTNESS_INDEX = 1;
     private static final int TOPBAR_CURVE_INDEX = 2;
+    private static final int TOPBAR_KEYBOARD_INDEX = 3;
     // Matches OUTLINE_TEX in xr_renderer.c - size of one cell in the strip
     private static final int TOPBAR_CELL_TEX = 128;
     // Bleed margin for the background pill's feather - matches
@@ -175,9 +179,12 @@ public class XrRenderer implements SurfaceTexture.OnFrameAvailableListener {
         void onVrPointerMove(float u, float v);
         void onVrButton(int button, boolean down);
         void onVrScroll(int clicks);
-        // Productivity mode's top menu bar exit button. There's no Android
-        // back gesture inside an immersive session, so this is the way out.
+        // Top menu bar exit button. There's no Android back gesture inside
+        // an immersive session, so this is the way out.
         void onVrExitRequested();
+        // Top menu bar keyboard button - shows/hides the system soft
+        // keyboard, same as the existing flat-mode gesture.
+        void onVrKeyboardToggleRequested();
         // Desktop audio balance/gain relative to the user's head and the
         // centre screen. Always (0, 1) outside Productivity mode.
         void onVrSpatialAudio(float pan, float gain);
@@ -570,6 +577,7 @@ public class XrRenderer implements SurfaceTexture.OnFrameAvailableListener {
         drawIcon(canvas, R.drawable.ic_topbar_exit, cellRect(TOPBAR_EXIT_INDEX));
         drawIcon(canvas, R.drawable.ic_topbar_brightness, cellRect(TOPBAR_BRIGHTNESS_INDEX));
         drawIcon(canvas, R.drawable.ic_topbar_curve, cellRect(TOPBAR_CURVE_INDEX));
+        drawIcon(canvas, R.drawable.ic_topbar_keyboard, cellRect(TOPBAR_KEYBOARD_INDEX));
 
         return strip;
     }
@@ -652,6 +660,10 @@ public class XrRenderer implements SurfaceTexture.OnFrameAvailableListener {
 
         if (inputState[IN_EXIT_PRESSED] != 0.0f && inputListener != null) {
             inputListener.onVrExitRequested();
+        }
+
+        if (inputState[IN_KEYBOARD_TOGGLE] != 0.0f && inputListener != null) {
+            inputListener.onVrKeyboardToggleRequested();
         }
 
         if (inputListener != null) {
