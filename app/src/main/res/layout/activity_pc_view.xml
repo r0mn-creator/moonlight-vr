@@ -7,6 +7,11 @@
     android:background="@color/ml_bg_panel_gaming"
     tools:context=".PcView" >
 
+    <!-- Gaming/Productivity mode toggle, hidden for now: this build of
+         Virtual Moonlight is Gaming-only while Productivity Mode continues
+         development in a separate private repo. Set back to "visible" to
+         re-enable once PMode is merged back - PcView.java's
+         initializeModeTabs() call is commented out to match. -->
     <LinearLayout
         android:id="@+id/modeTabBar"
         android:layout_width="wrap_content"
@@ -17,7 +22,8 @@
         android:layout_marginBottom="6dp"
         android:orientation="horizontal"
         android:background="@drawable/bg_tabbar_container"
-        android:padding="6dp">
+        android:padding="6dp"
+        android:visibility="gone">
 
         <TextView
             android:id="@+id/tabGaming"

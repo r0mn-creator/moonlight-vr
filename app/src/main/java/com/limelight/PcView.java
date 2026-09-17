@@ -194,7 +194,10 @@ public class PcView extends Activity implements AdapterFragmentCallbacks {
             helpButton.setVisibility(View.GONE);
         }
 
-        initializeModeTabs();
+        // Gaming-only build: Productivity Mode continues development in a
+        // separate private repo. Re-enable this call (and modeTabBar's
+        // visibility in activity_pc_view.xml) once it's merged back.
+        // initializeModeTabs();
 
         getFragmentManager().beginTransaction()
             .replace(R.id.pcFragmentContainer, new AdapterFragment())
