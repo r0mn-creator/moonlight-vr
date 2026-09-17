@@ -144,9 +144,11 @@ slider - mirrors Exit's pattern exactly) wired to a new
 `toggleKeyboard()` normally only runs from a touch-gesture callback, not
 the render thread this fires from). Zero new text-input plumbing.
 
-Icon is a placeholder (drawn procedurally, simple keyboard glyph) since no
-custom art was provided for this one yet - swap `ic_topbar_keyboard.png`
-whenever.
+Icon started as a procedural placeholder, then replaced same day with
+user-supplied art (`ic_topbar_keyboard.png`) - same cleanup as the curve
+icon needed: source was a near-white light grey (`244,244,244`) with soft
+noisy edges, recolored to solid white and denoised to match the rest of
+the set.
 
 **Real unverified assumption, flagged explicitly**: that Quest's system
 keyboard actually renders as a visible, legible overlay *within* this
