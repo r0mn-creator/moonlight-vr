@@ -58,6 +58,11 @@ public class PreferenceConfiguration {
     // flat Settings screen - see XrRenderer.savePassthroughLevel()'s sibling.
     public static final String VR_CURVATURE_PREF_STRING = "seekbar_vr_curvature";
     private static final String VR_DEPTH_SOURCE_PREF_STRING = "list_vr_depth_source";
+    // The simple on/off most users see; VR_DEPTH_SOURCE_PREF_STRING above is
+    // the advanced/debug pattern picker (flat/ramp/blob/eyetest/shifttest)
+    // and stays independent of this. Also written live by the top bar's
+    // 3D-effect icon in VR, not just the flat Settings screen.
+    public static final String VR_DEPTH_EFFECT_PREF_STRING = "checkbox_vr_depth_effect";
     private static final String VR_EYE_SWAP_PREF_STRING = "checkbox_vr_eye_swap";
     private static final String VR_POINTER_PREF_STRING = "checkbox_vr_pointer";
     private static final String VR_GAZE_PREF_STRING = "checkbox_vr_gaze";
@@ -121,6 +126,7 @@ public class PreferenceConfiguration {
     private static final int DEFAULT_VR_DISTANCE = 30;
     private static final int DEFAULT_VR_SCREEN_SIZE = 30;
     private static final int DEFAULT_VR_CURVATURE = 0;
+    private static final boolean DEFAULT_VR_DEPTH_EFFECT = true;
     private static final String DEFAULT_VR_DEPTH_SOURCE = "model";
     private static final boolean DEFAULT_VR_EYE_SWAP = false;
     // On by default for new installs; the checkbox is sticky after that —
@@ -194,6 +200,7 @@ public class PreferenceConfiguration {
     public int vrScreenSize;
     // 0 to 100
     public int vrCurvature;
+    public boolean vrDepthEffect;
     // 0 off, 1 flat, 2 ramp, 3 blob, 4 eye test, 5 shift test, 6 depth model
     public int vrDepthMode;
     public boolean vrEyeSwap;
@@ -665,6 +672,7 @@ public class PreferenceConfiguration {
         config.vrDistance = prefs.getInt(VR_DISTANCE_PREF_STRING, DEFAULT_VR_DISTANCE);
         config.vrScreenSize = prefs.getInt(VR_SCREEN_SIZE_PREF_STRING, DEFAULT_VR_SCREEN_SIZE);
         config.vrCurvature = prefs.getInt(VR_CURVATURE_PREF_STRING, DEFAULT_VR_CURVATURE);
+        config.vrDepthEffect = prefs.getBoolean(VR_DEPTH_EFFECT_PREF_STRING, DEFAULT_VR_DEPTH_EFFECT);
         String depthSource = prefs.getString(VR_DEPTH_SOURCE_PREF_STRING, DEFAULT_VR_DEPTH_SOURCE);
         if (depthSource.equals("flat")) {
             config.vrDepthMode = 1;

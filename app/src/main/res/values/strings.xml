@@ -281,8 +281,10 @@
     <string name="title_vr_reset_pose">Reset screen position</string>
     <string name="summary_vr_reset_pose">Put the screen back to the distance and width above, undoing any move or resize done with the controllers</string>
     <string name="toast_vr_reset_pose">Screen position reset</string>
-    <string name="title_vr_depth_source">Realtime 3D mode</string>
-    <string name="summary_vr_depth_source">Choose the realtime 3D mode, including test patterns.</string>
+    <string name="title_vr_depth_effect">3D Effect</string>
+    <string name="summary_vr_depth_effect">Adds realtime depth to the screen. Can also be toggled live from the in-VR menu bar.</string>
+    <string name="title_vr_depth_source">Realtime 3D mode (advanced)</string>
+    <string name="summary_vr_depth_source">Choose the realtime 3D mode, including test patterns. Leave on "Model" unless you\'re debugging.</string>
     <string name="title_vr_depth_debug">Show depth map</string>
     <string name="summary_vr_depth_debug">Render the depth map as grayscale instead of the video, for checking depth quality</string>
     <string name="title_vr_eye_swap">Swap eyes</string>

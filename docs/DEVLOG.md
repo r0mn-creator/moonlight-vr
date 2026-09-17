@@ -158,10 +158,85 @@ Android/Quest apps in general, and nothing here should prevent it, but it
 hasn't been seen working in this specific app yet - first thing to check
 alongside the rest of the top bar.
 
+## This build is Gaming-only - Productivity Mode moved to a private repo
+
+Decided to split development: Productivity Mode continues in a new
+private repo, `r0mn-creator/moonlight-vr-pmode` (a full-history copy of
+this repo, made by mirror-pushing rather than GitHub's Fork feature, which
+won't fork a repo into the account that already owns it - local clone at
+`/home/roman/Android/MoonlightVR-PMode`). This public repo's `master`
+stays Gaming-only for now.
+
+Scope was deliberately kept small: "you only need to remove what the user
+can see... Gmode works just fine." So only the user-visible surface was
+touched - the Gaming/Productivity tab bar on PC-select is hidden
+(`activity_pc_view.xml`'s `modeTabBar` set to `visibility="gone"`,
+`PcView.java`'s `initializeModeTabs()` call commented out) - and nothing
+underneath was removed. All the PMode code (multi-process
+`PModeScreenService`s, AIDL, native `productivityMode` render/input
+paths) is still physically in this repo, just permanently unreachable
+since nothing can set `productivityMode = true` anymore. Trivially
+reversible when PMode is ready to merge back.
+
+The shared top-bar work (Exit, brightness, curve, keyboard) shipped here
+too, deliberately - none of it is Productivity-specific, it was built to
+serve both modes identically from the start.
+
+## Fifth top-bar module: 3D effect toggle, live in both directions
+
+Same "on/off, no slider" shape as Exit and the keyboard button, but this
+one turned out to have a real architectural wrinkle worth recording.
+
+**The setting itself**: Productivity Mode used to have its own Depth
+Off/On buttons in the (now-hidden) drawer panel - a per-launch toggle, not
+a persisted preference, and Productivity-specific. Promoted that concept
+into a real, simple, mode-agnostic Settings checkbox
+(`checkbox_vr_depth_effect`, "3D Effect", on by default) that both modes
+now share - separate from the existing `list_vr_depth_source` dropdown,
+which stays as the advanced/debug test-pattern picker (flat/ramp/blob/
+eyetest/shifttest) it always was.
+
+**Why a live toggle isn't "just another flag the render reads"**: the
+mono-vs-stereo decision was baked into the actual OpenXR swapchain's size
+at session start (`videoWidth * 2` for stereo, `videoWidth` for mono, in
+`initSwapchain()`) - not something a per-frame flag can change, since you
+can't resize a live swapchain. Fix: always initialize as at least
+`DEPTH_MODE_MODEL`-capable (never truly `OFF`) so the swapchain is always
+allocated stereo-sized, regardless of the saved toggle state - this costs
+nothing new in practice, since the existing default was already "model"
+for virtually everyone. The live toggle then only has to flip two much
+lighter things each way: `ctx->depthEffectOn` (a new native flag that
+zeroes `separation` before `renderVideoFrame()`, collapsing the whole warp
+to a flat pass in one place rather than gating occlusion/upsample/
+disparity separately), and the Java-side MiDaS inference thread's actual
+running state (saves the ~13.5ms/frame GPU cost when off).
+
+**Second wrinkle**: `startDepthThread()`/`stopDepthThread()` were written
+assuming a start-once/stop-once lifecycle per session (`stopDepthThread()`
+blocks on `join()`, and `depthExit` was never reset back to `false`
+anywhere). The live toggle needs both to run repeatedly within one
+session, and `stopDepthThread()`'s blocking join can't run on the render
+thread without stalling the whole VR view for however long it takes.
+Fixed with `reconcileDepthThread()`: a small dedicated worker thread that
+serializes start/stop calls (only one in flight at a time - both touch the
+same depth EGL context, so they can't be allowed to race), and
+`startDepthThread()` now resets `depthExit`/`depthPending`/`depthBusy`
+before spinning up a fresh thread. The visual change itself
+(`nativeSetDepthEffect`) is applied immediately regardless of how long the
+thread reconciliation takes, so the toggle always *feels* instant even
+though the GPU-cost saving lags a moment behind it.
+
+Icon is a placeholder pair (filled "lenses" for on, outline-only for off)
+since no custom art was provided for this one yet.
+
 ## Not yet verified / next up
 
 - The actual on-device feel of the top bar and slider in both modes (needs
   a real PC-connected session).
+- The 3D-effect toggle specifically: repeated on/off cycling within one
+  session (does `reconcileDepthThread()` actually behave under rapid
+  double-taps, does the depth EGL context survive several start/stop
+  cycles cleanly) has only been reasoned through, not run on a headset.
 - Further UI/UX targets beyond the top bar: the flat 2D screens (PC-select,
   Settings) haven't had a pass yet, and are actually easier to iterate on
   without a headset worn (adb can drive/screenshot a normal Activity in a

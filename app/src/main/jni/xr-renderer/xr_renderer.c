@@ -126,7 +126,11 @@
 // Top bar keyboard button, pressed this frame - shows/hides the system
 // soft keyboard, same as the flat-mode gesture already does
 #define IN_KEYBOARD_TOGGLE 28
-#define IN_SLOTS    29
+// Top bar 3D-effect button, pressed this frame - a request to flip it, not
+// the resulting state (Java owns and echoes the real value back via
+// nativeSetDepthEffect, same fire-and-forget shape as IN_KEYBOARD_TOGGLE)
+#define IN_DEPTH_TOGGLE 29
+#define IN_SLOTS    30
 
 // Grab thresholds for the grip, and the range a resize is allowed to reach
 #define SCREEN_MIN_WIDTH 0.8f
@@ -253,11 +257,12 @@
 #define PRODUCTIVITY_BAR_Y_OFFSET_M 0.50f
 #define TOPBAR_ITEM_SIZE_M 0.10f
 #define TOPBAR_ITEM_GAP_M 0.03f
-#define TOPBAR_ITEM_COUNT 4
+#define TOPBAR_ITEM_COUNT 5
 #define TOPBAR_EXIT_INDEX 0
 #define TOPBAR_BRIGHTNESS_INDEX 1
 #define TOPBAR_CURVE_INDEX 2
 #define TOPBAR_KEYBOARD_INDEX 3
+#define TOPBAR_DEPTH_INDEX 4
 // ctx->openSlider when no slider is open - not a real item index
 #define TOPBAR_NO_SLIDER (-1)
 #define TOPBAR_WIDTH_M (TOPBAR_ITEM_COUNT * TOPBAR_ITEM_SIZE_M \
@@ -451,6 +456,12 @@ typedef struct {
     // offer it, but Meta only turns the cameras on if the manifest asks.
     int alphaBlendSupported;
     int passthrough;
+    // Live on/off for the whole depth/stereo warp - separate from
+    // stereoMode below, which is fixed for the session (it decides the
+    // swapchain's actual size). This just zeroes separation each frame when
+    // off, so toggling never needs to resize anything. Top bar's 3D-effect
+    // icon controls it; Java owns the persisted value.
+    int depthEffectOn;
     // Hand tracking arrives as another interaction profile rather than as a
     // separate input path, so the pointer does not know the difference
     int handInteraction;
@@ -3189,6 +3200,10 @@ Java_com_limelight_binding_video_XrRenderer_nativeInit(JNIEnv* env, jobject thiz
     // 0 (TOPBAR_EXIT_INDEX) is a real item, so this can't rely on calloc's
     // zero-init like most flags here
     ctx->openSlider = TOPBAR_NO_SLIDER;
+    // Overwritten immediately by nativeSetDepthEffect() once Java restores
+    // the real saved value - true here only covers the handful of frames
+    // before that lands.
+    ctx->depthEffectOn = 1;
     (*env)->GetJavaVM(env, &ctx->vm);
     ctx->activity = (*env)->NewGlobalRef(env, activity);
 
@@ -3699,6 +3714,16 @@ static int updateTopBar(XrCtx* ctx, XrPosef* aims, const int* valid, float* out)
                 && u >= 0.0f && u <= 1.0f && v >= 0.0f && v <= 1.0f) {
             if (ctx->triggerEdge[h]) {
                 out[IN_KEYBOARD_TOGGLE] = 1.0f;
+                fireHaptic(ctx, h);
+            }
+            return 1;
+        }
+
+        if (screenProject(aims[h], topBarItemPose(ctx, TOPBAR_DEPTH_INDEX, TOPBAR_ITEM_COUNT),
+                          TOPBAR_ITEM_SIZE_M, TOPBAR_ITEM_SIZE_M, 0.0f, 0, &u, &v)
+                && u >= 0.0f && u <= 1.0f && v >= 0.0f && v <= 1.0f) {
+            if (ctx->triggerEdge[h]) {
+                out[IN_DEPTH_TOGGLE] = 1.0f;
                 fireHaptic(ctx, h);
             }
             return 1;
@@ -4765,6 +4790,20 @@ Java_com_limelight_binding_video_XrRenderer_nativeSetCurvature(JNIEnv* env, jobj
     ctx->curveAmount = amount < 0.0f ? 0.0f : (amount > 1.0f ? 1.0f : amount);
 }
 
+// Java owns the actual on/off state (it also has to start/stop the depth
+// inference thread and persist the preference) - this just echoes it into
+// the live gate nativeEndFrame reads. Called both at session start and
+// every time the top bar's 3D-effect icon is tapped.
+JNIEXPORT void JNICALL
+Java_com_limelight_binding_video_XrRenderer_nativeSetDepthEffect(JNIEnv* env, jobject thiz,
+                                                                   jlong handle, jboolean on) {
+    XrCtx* ctx = (XrCtx*)(intptr_t)handle;
+    if (ctx == NULL) {
+        return;
+    }
+    ctx->depthEffectOn = on;
+}
+
 // Puts back a placement saved from a previous session. Marking the sliders as
 // already seen stops the first frame taking the screen straight back off it.
 JNIEXPORT void JNICALL
@@ -4878,7 +4917,11 @@ Java_com_limelight_binding_video_XrRenderer_nativeEndFrame(JNIEnv* env, jobject 
 
         float texMatrix[16];
         (*env)->GetFloatArrayRegion(env, texMatrixArr, 0, 16, texMatrix);
-        renderVideoFrame(ctx, texMatrix, separation);
+        // Zero separation collapses every stage of the warp (occlusion
+        // search, upsample offset, final disparity) to a flat pass without
+        // needing its own gate at each one - same live on/off switch the
+        // top bar's 3D-effect icon controls.
+        renderVideoFrame(ctx, texMatrix, ctx->depthEffectOn ? separation : 0.0f);
 
         long elapsed = nowNs() - startNs;
         ctx->statFrames++;

@@ -43,6 +43,7 @@ public class XrRenderer implements SurfaceTexture.OnFrameAvailableListener {
     private static final int FRAME_IDLE = 0;
     private static final int FRAME_RENDER = 1;
 
+    private static final int DEPTH_MODE_OFF = 0;
     private static final int DEPTH_MODE_MODEL = 6;
 
     // Averaged over this many inferences before hitting logcat
@@ -146,7 +147,11 @@ public class XrRenderer implements SurfaceTexture.OnFrameAvailableListener {
     // Top bar keyboard button, pressed this frame - shows/hides the system
     // soft keyboard, same as the flat-mode gesture already does
     private static final int IN_KEYBOARD_TOGGLE = 28;
-    private static final int IN_SLOTS = 29;
+    // Top bar 3D-effect button, pressed this frame - a request to flip it,
+    // not the resulting state (this class owns and echoes the real value
+    // back via nativeSetDepthEffect, same shape as IN_KEYBOARD_TOGGLE)
+    private static final int IN_DEPTH_TOGGLE = 29;
+    private static final int IN_SLOTS = 30;
     private static final int POSE_VALUES = 9;
     private final float[] inputState = new float[IN_SLOTS];
     private int heldButtons;
@@ -160,11 +165,20 @@ public class XrRenderer implements SurfaceTexture.OnFrameAvailableListener {
     // which screen(s) it floats above). One bitmap, one cell per item, built
     // once and uploaded whole.
     private final AtomicReference<ByteBuffer> pendingTopBarArt = new AtomicReference<>();
-    private static final int TOPBAR_ITEM_COUNT = 4;
+    private static final int TOPBAR_ITEM_COUNT = 5;
     private static final int TOPBAR_EXIT_INDEX = 0;
     private static final int TOPBAR_BRIGHTNESS_INDEX = 1;
     private static final int TOPBAR_CURVE_INDEX = 2;
     private static final int TOPBAR_KEYBOARD_INDEX = 3;
+    private static final int TOPBAR_DEPTH_INDEX = 4;
+    // Live 3D-effect state - toggled from the top bar, started from
+    // PreferenceConfiguration.VR_DEPTH_EFFECT_PREF_STRING. Read by
+    // buildTopBarArt() to pick which of the two icon variants to draw.
+    private volatile boolean depthEffectOn = true;
+    // True unless the advanced "Realtime 3D mode" list was explicitly set
+    // to a debug test pattern - those don't run the real inference thread,
+    // so the top bar's toggle only starts/stops it when this is true.
+    private boolean depthModelCapable = true;
     // Matches OUTLINE_TEX in xr_renderer.c - size of one cell in the strip
     private static final int TOPBAR_CELL_TEX = 128;
     // Bleed margin for the background pill's feather - matches
@@ -222,6 +236,7 @@ public class XrRenderer implements SurfaceTexture.OnFrameAvailableListener {
     private native void nativeUploadTopBarArt(long ctx, ByteBuffer strip);
     private native void nativeSetPassthroughLevel(long ctx, float level);
     private native void nativeSetCurvature(long ctx, float amount);
+    private native void nativeSetDepthEffect(long ctx, boolean on);
     private native void nativeUploadOverlay(long ctx, ByteBuffer pixels, int width, int height);
     private native float nativeGetWarpGpuMs(long ctx);
     private native void nativeDestroy(long ctx);
@@ -236,7 +251,16 @@ public class XrRenderer implements SurfaceTexture.OnFrameAvailableListener {
         renderThread = new Thread() {
             @Override
             public void run() {
-                nativeCtx = nativeInit(activity, videoWidth, videoHeight, prefs.vrDepthMode,
+                // Always init at least MODEL-capable (never OFF) so the
+                // swapchain is allocated stereo-sized regardless of the
+                // saved 3D-effect toggle - that's what lets the top bar
+                // flip it on live later without resizing anything. An
+                // explicit debug pattern (flat/ramp/blob/eyetest/shifttest)
+                // from the advanced list is still respected as-is.
+                int nativeStereoMode = prefs.vrDepthMode == DEPTH_MODE_OFF
+                        ? DEPTH_MODE_MODEL : prefs.vrDepthMode;
+                depthModelCapable = nativeStereoMode == DEPTH_MODE_MODEL;
+                nativeCtx = nativeInit(activity, videoWidth, videoHeight, nativeStereoMode,
                         prefs.vrDepthDebug, prefs.vrConvergence, prefs.vrDepthScale,
                         prefs.productivityMode);
                 if (nativeCtx == 0) {
@@ -246,11 +270,13 @@ public class XrRenderer implements SurfaceTexture.OnFrameAvailableListener {
 
                 prefsContext = activity.getApplicationContext();
                 restoreScreenPose();
+                depthEffectOn = prefs.vrDepthEffect;
                 pendingTopBarArt.set(toBuffer(buildTopBarArt()));
                 nativeSetPassthroughLevel(nativeCtx, PreferenceManager
                         .getDefaultSharedPreferences(prefsContext)
                         .getFloat(PreferenceConfiguration.VR_PASSTHROUGH_LEVEL_PREF_STRING, 1.0f));
                 nativeSetCurvature(nativeCtx, prefs.vrCurvature / 100.0f);
+                nativeSetDepthEffect(nativeCtx, depthEffectOn);
 
                 File captureDir = activity.getExternalFilesDir(null);
                 if (captureDir != null) {
@@ -286,7 +312,7 @@ public class XrRenderer implements SurfaceTexture.OnFrameAvailableListener {
                     }
                 }
 
-                if (prefs.vrDepthMode == DEPTH_MODE_MODEL) {
+                if (nativeStereoMode == DEPTH_MODE_MODEL && depthEffectOn) {
                     startDepthThread(activity);
                 }
 
@@ -333,7 +359,15 @@ public class XrRenderer implements SurfaceTexture.OnFrameAvailableListener {
      * thread with its own context in the render context's share group. The
      * frame loop hands over a captured frame and carries on submitting.
      */
-    private void startDepthThread(final Activity activity) {
+    private void startDepthThread(final Context activity) {
+        // Originally start-once/stop-once per session; the top bar's live
+        // toggle can now call this again after a stop, so the exit/pending
+        // state from any previous run needs clearing first.
+        synchronized (depthLock) {
+            depthExit = false;
+            depthPending = false;
+            depthBusy = false;
+        }
         depthThread = new Thread() {
             @Override
             public void run() {
@@ -578,6 +612,8 @@ public class XrRenderer implements SurfaceTexture.OnFrameAvailableListener {
         drawIcon(canvas, R.drawable.ic_topbar_brightness, cellRect(TOPBAR_BRIGHTNESS_INDEX));
         drawIcon(canvas, R.drawable.ic_topbar_curve, cellRect(TOPBAR_CURVE_INDEX));
         drawIcon(canvas, R.drawable.ic_topbar_keyboard, cellRect(TOPBAR_KEYBOARD_INDEX));
+        drawIcon(canvas, depthEffectOn ? R.drawable.ic_topbar_3d_on : R.drawable.ic_topbar_3d_off,
+                cellRect(TOPBAR_DEPTH_INDEX));
 
         return strip;
     }
@@ -666,6 +702,10 @@ public class XrRenderer implements SurfaceTexture.OnFrameAvailableListener {
             inputListener.onVrKeyboardToggleRequested();
         }
 
+        if (inputState[IN_DEPTH_TOGGLE] != 0.0f) {
+            toggleDepthEffect();
+        }
+
         if (inputListener != null) {
             inputListener.onVrSpatialAudio(inputState[IN_AUDIO_PAN], inputState[IN_AUDIO_GAIN]);
         }
@@ -747,6 +787,72 @@ public class XrRenderer implements SurfaceTexture.OnFrameAvailableListener {
         PreferenceManager.getDefaultSharedPreferences(prefsContext).edit()
                 .putInt(PreferenceConfiguration.VR_CURVATURE_PREF_STRING, Math.round(amount * 100.0f))
                 .apply();
+    }
+
+    // A tap-to-flip toggle rather than a dragged value, so unlike
+    // brightness/curve this owns its own state here (native only echoes it
+    // back for the render-side gate) - flipping it also has to start/stop
+    // the depth inference thread, which only Java can do.
+    private void toggleDepthEffect() {
+        depthEffectOn = !depthEffectOn;
+        // Instant and self-contained: this alone makes the visual change
+        // immediate regardless of whether the inference thread has actually
+        // stopped/started yet (see reconcileDepthThread()).
+        nativeSetDepthEffect(nativeCtx, depthEffectOn);
+
+        if (depthModelCapable) {
+            reconcileDepthThread();
+        }
+
+        if (prefsContext != null) {
+            PreferenceManager.getDefaultSharedPreferences(prefsContext).edit()
+                    .putBoolean(PreferenceConfiguration.VR_DEPTH_EFFECT_PREF_STRING, depthEffectOn)
+                    .apply();
+        }
+
+        pendingTopBarArt.set(toBuffer(buildTopBarArt()));
+    }
+
+    private final Object depthThreadOpLock = new Object();
+    private boolean depthThreadOpInFlight;
+
+    /**
+     * Starts or stops the depth thread to match depthEffectOn, off the
+     * render thread - stopDepthThread() blocks on a join(), which would
+     * stall the whole VR view for however long that takes if called from
+     * dispatchInput() directly. Only one of these runs at a time; a toggle
+     * that lands while one is already in flight is picked up by a follow-up
+     * pass once it finishes, rather than racing a second start/stop against
+     * it (both touch the same depth EGL context).
+     */
+    private void reconcileDepthThread() {
+        synchronized (depthThreadOpLock) {
+            if (depthThreadOpInFlight) {
+                return;
+            }
+            depthThreadOpInFlight = true;
+        }
+        new Thread() {
+            @Override
+            public void run() {
+                boolean want = depthEffectOn;
+                boolean have = depthThread != null;
+                if (want != have) {
+                    if (want) {
+                        startDepthThread(prefsContext);
+                    }
+                    else {
+                        stopDepthThread();
+                    }
+                }
+                synchronized (depthThreadOpLock) {
+                    depthThreadOpInFlight = false;
+                }
+                if (want != depthEffectOn) {
+                    reconcileDepthThread();
+                }
+            }
+        }.start();
     }
 
     private void restoreScreenPose() {
