@@ -200,6 +200,9 @@
 #define DEPTH_MODE_MODEL 6
 
 #define DEPTH_TEX_SIZE 256
+// Small enough that reading it back every frame is free - this only ever
+// feeds one averaged colour, not an image
+#define GLOW_TEX_SIZE 8
 
 // setprop this to any new value to dump one frame's worth of warp inputs and
 // outputs, so shader changes can be tried on captured frames off device
@@ -366,6 +369,18 @@ typedef struct {
     float* modelInput;
     float* modelOutput;
     unsigned char* depthUploadBuf;
+
+    // Ambient "glow" colour (v1: a plain average of the current frame) that
+    // tints the passthrough dim sphere instead of flat black, so a dark
+    // room picks up ambient light coloured like whatever's on screen -
+    // independent of the depth model, so it works with 3D effect off too.
+    // Own program/target rather than reusing downscaleProgram, since that
+    // one only exists when stereoMode == DEPTH_MODE_MODEL.
+    GLuint glowProgram;
+    GLint glowTexMatrixUniform;
+    GLuint glowTexture;
+    GLuint glowFbo;
+    float glowR, glowG, glowB;
 
     // Temporal smoothing. The normalization range is smoothed separately from
     // the map itself: a single outlier pixel moving the min or max used to
@@ -1480,6 +1495,45 @@ static int initDepthModel(XrCtx* ctx) {
     return 1;
 }
 
+// Reuses the same box-filter downscale shader as the depth model
+// (DOWNSCALE_FRAGMENT_SRC already spans the whole frame via the vertex
+// stage's interpolated coordinate, so a smaller target here is still a
+// valid whole-frame sample, just coarser) - but its own program/target,
+// since downscaleProgram only exists in DEPTH_MODE_MODEL sessions and
+// glow needs to work regardless of the 3D-effect toggle.
+static int initGlow(XrCtx* ctx) {
+    if (!linkProgram(&ctx->glowProgram, DOWNSCALE_FRAGMENT_SRC, "glow")) {
+        return 0;
+    }
+    ctx->glowTexMatrixUniform = glGetUniformLocation(ctx->glowProgram, "u_texmatrix");
+    glUseProgram(ctx->glowProgram);
+    glUniform1i(glGetUniformLocation(ctx->glowProgram, "u_texture"), 0);
+
+    glGenTextures(1, &ctx->glowTexture);
+    glBindTexture(GL_TEXTURE_2D, ctx->glowTexture);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, GLOW_TEX_SIZE, GLOW_TEX_SIZE, 0, GL_RGBA,
+                GL_UNSIGNED_BYTE, NULL);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+
+    glGenFramebuffers(1, &ctx->glowFbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, ctx->glowFbo);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
+                           ctx->glowTexture, 0);
+    GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    if (status != GL_FRAMEBUFFER_COMPLETE) {
+        LOGE("glow framebuffer incomplete: 0x%x", status);
+        return 0;
+    }
+
+    // Full passthrough (the default) never shows the dim sphere at all, so
+    // starting white is harmless - it only ever multiplies visible alpha
+    // once the room actually darkens, by which point a real frame has run.
+    ctx->glowR = ctx->glowG = ctx->glowB = 1.0f;
+    return 1;
+}
+
 static int initGl(XrCtx* ctx) {
     GLuint vs = compileShader(GL_VERTEX_SHADER, VERTEX_SRC);
     GLuint fs = compileShader(GL_FRAGMENT_SHADER, FRAGMENT_SRC);
@@ -1579,6 +1633,10 @@ static int initGl(XrCtx* ctx) {
         if (!initDepthModel(ctx) || !initUpsample(ctx)) {
             return 0;
         }
+    }
+
+    if (!initGlow(ctx)) {
+        return 0;
     }
 
     return 1;
@@ -4484,6 +4542,49 @@ static void runOffsetSearch(XrCtx* ctx, float separation) {
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 }
 
+// Ambient glow v1: box-filter the whole frame down to GLOW_TEX_SIZE and
+// average that in C, same shape as nativeCaptureDepthInput's downscale but
+// independent of it. Only called while the dim sphere is actually visible
+// (see the caller), so this costs nothing at the default full-passthrough
+// level.
+static void computeGlowColor(XrCtx* ctx, const float* texMatrix) {
+    if (ctx->glowFbo == 0) {
+        return;
+    }
+
+    glBindFramebuffer(GL_FRAMEBUFFER, ctx->glowFbo);
+    glViewport(0, 0, GLOW_TEX_SIZE, GLOW_TEX_SIZE);
+    if (ctx->srgbWriteControl) {
+        glDisable(GL_FRAMEBUFFER_SRGB_EXT);
+    }
+
+    glUseProgram(ctx->glowProgram);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_EXTERNAL_OES, ctx->oesTexture);
+    glUniformMatrix4fv(ctx->glowTexMatrixUniform, 1, GL_FALSE, texMatrix);
+
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 16, VERTEX_DATA);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 16, VERTEX_DATA + 2);
+    glEnableVertexAttribArray(1);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+
+    unsigned char px[GLOW_TEX_SIZE * GLOW_TEX_SIZE * 4];
+    glReadPixels(0, 0, GLOW_TEX_SIZE, GLOW_TEX_SIZE, GL_RGBA, GL_UNSIGNED_BYTE, px);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+    const int count = GLOW_TEX_SIZE * GLOW_TEX_SIZE;
+    long sumR = 0, sumG = 0, sumB = 0;
+    for (int i = 0; i < count; i++) {
+        sumR += px[i * 4 + 0];
+        sumG += px[i * 4 + 1];
+        sumB += px[i * 4 + 2];
+    }
+    ctx->glowR = (float)sumR / (count * 255.0f);
+    ctx->glowG = (float)sumG / (count * 255.0f);
+    ctx->glowB = (float)sumB / (count * 255.0f);
+}
+
 static void renderVideoFrame(XrCtx* ctx, const float* texMatrix, float separation) {
     int upsampling = ctx->stereoMode == DEPTH_MODE_MODEL && ctx->upsampleEnabled;
     int occluding = upsampling && ctx->occlusionEnabled && separation > 0.0f;
@@ -4923,6 +5024,10 @@ Java_com_limelight_binding_video_XrRenderer_nativeEndFrame(JNIEnv* env, jobject 
         // top bar's 3D-effect icon controls.
         renderVideoFrame(ctx, texMatrix, ctx->depthEffectOn ? separation : 0.0f);
 
+        if (ctx->passthroughLevel < 0.999f) {
+            computeGlowColor(ctx, texMatrix);
+        }
+
         long elapsed = nowNs() - startNs;
         ctx->statFrames++;
         ctx->statTotalNs += elapsed;
@@ -4984,16 +5089,25 @@ Java_com_limelight_binding_video_XrRenderer_nativeEndFrame(JNIEnv* env, jobject 
 
     // ctx->passthrough drives the blend mode above; the dim layer below is a
     // separate, independent full-surround occlusion the brightness slider
-    // controls, layered behind everything else.
+    // controls, layered behind everything else. Ambient glow v1: tinted by
+    // the current frame's average colour (computeGlowColor()) instead of
+    // flat black, so a dark room picks up light coloured like the screen -
+    // re-uploaded every frame while actually visible, since video content
+    // changes every frame; at the default full-passthrough level this whole
+    // block is skipped, same as before.
     if (ctx->equirectSupported
             && (!ctx->dimUploadedValid
-                || fabsf(ctx->dimUploadedLevel - ctx->passthroughLevel) > 0.001f)) {
+                || fabsf(ctx->dimUploadedLevel - ctx->passthroughLevel) > 0.001f
+                || ctx->passthroughLevel < 0.999f)) {
         unsigned char px[DIM_TEX * DIM_TEX * 4];
         unsigned char alpha = (unsigned char)((1.0f - ctx->passthroughLevel) * 255.0f + 0.5f);
+        unsigned char r = (unsigned char)(ctx->glowR * 255.0f + 0.5f);
+        unsigned char g = (unsigned char)(ctx->glowG * 255.0f + 0.5f);
+        unsigned char b = (unsigned char)(ctx->glowB * 255.0f + 0.5f);
         for (int i = 0; i < DIM_TEX * DIM_TEX; i++) {
-            px[i * 4 + 0] = 0;
-            px[i * 4 + 1] = 0;
-            px[i * 4 + 2] = 0;
+            px[i * 4 + 0] = r;
+            px[i * 4 + 1] = g;
+            px[i * 4 + 2] = b;
             px[i * 4 + 3] = alpha;
         }
         ctx->dimReady = uploadArt(ctx, ctx->dimSwapchain, ctx->dimImages, px, DIM_TEX, DIM_TEX);

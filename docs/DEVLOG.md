@@ -233,10 +233,64 @@ unlike the last few icons). Only one asset was provided, so the "off"
 state is the same art at 45% alpha rather than a separately fabricated
 variant.
 
+## Ambient glow v1: the dim sphere tints itself from the screen's colour
+
+User's idea: like bias lighting behind a real TV, the darker the room gets
+(brightness slider), the more the surrounding passthrough should pick up
+ambient light coloured like whatever's on screen, instead of just fading
+to flat black.
+
+**v1 scope, deliberately simple**: one averaged colour for the whole
+frame, not per-edge/positional matching. `computeGlowColor()` reuses the
+existing box-filter downscale technique (`DOWNSCALE_FRAGMENT_SRC`, already
+used for the depth model's input) at a tiny `GLOW_TEX_SIZE` (8x8) target,
+own program/FBO since the depth model's version only exists in
+`DEPTH_MODE_MODEL` sessions and glow needs to work with the 3D effect off
+too. Read back and averaged in C into `ctx->glowR/G/B`, which the
+passthrough dim sphere's texture now uses instead of hardcoded black - the
+existing alpha curve (`1 - passthroughLevel`) already means "more visible
+as the room darkens" needed zero new logic, just a new colour underneath
+it.
+
+Only runs while the dim sphere is actually visible
+(`passthroughLevel < 0.999`), so the default full-passthrough experience
+costs nothing extra. Re-uploads the tiny dim texture every frame while
+visible (video content changes every frame; the texture is 4x4, cheap
+regardless).
+
+**Next evolution (discussed, not started)**: true room-scale glow, where
+light would bounce off the user's *actual* walls using Quest's scanned
+room geometry rather than a generic surrounding sphere. Researched what
+that would take:
+- APIs: `XR_FB_scene` + `XR_FB_spatial_entity*` for anchors/planes,
+  `XR_META_spatial_entity_mesh` for the actual triangle mesh (mesh is what
+  you'd need for real bounce/reflection math - the semantic plane API only
+  gives crude wall/floor rectangles).
+- Hard prerequisite: only works if the user already ran Quest's own
+  system-level Space Setup room scan - this app cannot trigger a scan
+  itself, only query whatever's already there. Must degrade gracefully
+  when absent (i.e. this can only ever be an optional layer over the v1
+  sphere effect, never a replacement for it).
+- Needs the `com.oculus.permission.USE_SCENE` manifest permission plus a
+  runtime consent prompt.
+- Considered stable/shipped for third-party apps as of 2025-2026, not
+  beta-flagged.
+- Real lift: this app currently uses zero spatial-entity APIs (just
+  passthrough + controllers), so this is closer to "new subsystem" (mesh
+  query, LOD/simplification budget for arbitrary user-room complexity,
+  raycast/reflection math against it) than "new render pass." Quest 3 gets
+  a meaningfully better mesh than Quest 2/Pro if that ever matters.
+
 ## Not yet verified / next up
 
 - The actual on-device feel of the top bar and slider in both modes (needs
   a real PC-connected session).
+- Ambient glow v1: whether the averaged colour actually reads as pleasant
+  "bias lighting" rather than a muddy tint, and whether per-frame texture
+  re-upload while visible has any measurable cost - only reasoned through,
+  never run, since `initGl()`/`initGlow()` only execute once a real VR
+  session starts (a PC connection), which nothing in this dev environment
+  can trigger.
 - The 3D-effect toggle specifically: repeated on/off cycling within one
   session (does `reconcileDepthThread()` actually behave under rapid
   double-taps, does the depth EGL context survive several start/stop
