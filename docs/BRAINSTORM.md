@@ -923,6 +923,82 @@ GitHub) - the fastest turnaround loop this project has had: real user
 symptom → real device log → real fix → same-session reinstall → retest,
 repeated 3 times in under an hour.
 
+## beta04's next symptom: the real server-side gap, found and fixed same day
+
+With beta04's client-side bug fixed, a new symptom appeared: choosing
+Desktop now kicked the user straight back to the PC list, "like Moonlight
+reset." Cleared the client log, had the user retry, and this time the
+per-screen `LimeLog` messages (finally reachable now that
+`MediaCodecHelper.initialize()` runs) told the whole story precisely:
+
+```
+screen 0: stage starting Desktop
+screen 0: stage complete Desktop
+screen 1: stage starting Desktop
+screen 1: stage complete Desktop
+screen 1: stage starting platform initialization / name resolution / audio stream init  (all complete)
+screen 1: stage starting RTSP handshake
+screen 1: stage failed RTSP handshake (error -1)
+```
+
+Screen 0's HTTP launch succeeds. Screen 1's HTTP launch *also* succeeds
+(it gets a `sessionUrl0` back) - but its RTSP handshake fails immediately
+after. Since any one screen failing currently aborts the whole session
+(the "no partially-broken multi-screen view" call made back in step 4),
+this reads exactly like "kicked back to PC select."
+
+**Root cause, found in `rtsp.cpp`**: `session_raise()` used a single-slot
+`safe::event_t` for the one launch that's allowed to be "pending" (HTTP-
+launched, not yet RTSP-connected) at a time:
+
+```cpp
+void session_raise(std::shared_ptr<launch_session_t> launch_session) {
+  if (launch_event.view(0s)) {
+    return;  // a second launch while one is pending just... vanishes
+  }
+  launch_event.raise(std::move(launch_session));
+  ...
+}
+```
+
+This is exactly the single-slot bottleneck flagged as a real risk back in
+the original singleton research, before the "steps 6/7 need zero new code"
+conclusion (which checked the `/launch` app-already-running logic and the
+`_session_slots` `set`, but never actually traced this specific hand-off
+mechanism through to a real multi-launch test). Screen 0's launch occupies
+the one slot; screen 1's `/launch` HTTP call still succeeds and tells the
+client to go connect - but its own `session_raise()` call finds the slot
+occupied and silently does nothing. Screen 1's client then opens its RTSP
+TCP connection to find *nothing* pending server-side -
+`"No pending session for incoming RTSP connection"` - immediate close,
+handshake failure.
+
+**Why this can't be fully general**: traced how `handle_accept()` actually
+matches an incoming RTSP TCP connection to a pending session - it doesn't;
+it just takes whatever's currently pending. The RTSP handshake itself
+carries no session-identifying token the server could use to disambiguate
+multiple truly-concurrent pending launches (`sessionUrl0` is just
+`scheme://address:port`, identical for every client). A *fully* general
+fix would need protocol-level changes on both ends. That's out of scope
+here.
+
+**The scoped fix that actually matches Virtual Moonlight's real behavior**:
+changed the single slot to a small FIFO queue (`safe::queue_t`, depth 8).
+`session_raise()` now queues instead of dropping. `handle_accept()` peeks
+the *oldest* pending entry without consuming it (a single session's own
+handshake can span more than one TCP connection, all needing to find it
+still there until `session_clear()` removes it). `session_clear()` now
+searches by `launch_session_id` instead of assuming there's only ever one
+entry. This works *because* Virtual Moonlight launches its 3 screens in a
+controlled, staggered sequence - connections arrive in the same order
+sessions were raised - not because the queue solves general concurrency.
+Documented that scope limitation directly in the code so a future reader
+doesn't assume more than what's actually guaranteed.
+
+Shipped in commit `4bb05918`. Not yet verified on real hardware - needs a
+fresh Virtual Sunshine build deployed to the user's PC, which is the next
+step once CI confirms it compiles.
+
 ## The drag-and-drop update path had a real bug — confirmed on the user's actual PC, 2026-09-16
 
 The "packaging simplified" plan above claimed the portable ZIP could just
