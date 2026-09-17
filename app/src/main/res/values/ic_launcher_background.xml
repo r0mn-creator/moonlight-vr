@@ -1,7 +1,4 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-  <!-- Distinct from the other Moonlight forks already on this headset while
-       we're testing side by side (com.limelight.unofficial, .noir) — just a
-       placeholder color, easy to swap for real branding later. -->
-  <color name="ic_launcher_background">#5B4FE8</color>
+  <color name="ic_launcher_background">#555C64</color>
 </resources>
