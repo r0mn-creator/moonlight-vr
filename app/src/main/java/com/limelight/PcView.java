@@ -141,6 +141,14 @@ public class PcView extends Activity implements AdapterFragmentCallbacks {
     private void initializeViews() {
         setContentView(R.layout.activity_pc_view);
 
+        // Which build is actually installed, at a glance - BuildConfig is
+        // generated per flavor/build type, so this always matches whatever
+        // was last installed without needing to hand-edit a string resource.
+        TextView versionLabel = findViewById(R.id.versionLabel);
+        if (versionLabel != null) {
+            versionLabel.setText(BuildConfig.VERSION_NAME);
+        }
+
         UiHelper.notifyNewRootView(this);
 
         // Allow floating expanded PiP overlays while browsing PCs
