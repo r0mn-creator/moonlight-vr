@@ -226,8 +226,12 @@ before spinning up a fresh thread. The visual change itself
 thread reconciliation takes, so the toggle always *feels* instant even
 though the GPU-cost saving lags a moment behind it.
 
-Icon is a placeholder pair (filled "lenses" for on, outline-only for off)
-since no custom art was provided for this one yet.
+Icon started as a placeholder pair (filled "lenses" for on, outline-only
+for off), then replaced same day with user-supplied art (an isometric "3D"
+block, already clean - full opacity at 255 white, no denoising needed
+unlike the last few icons). Only one asset was provided, so the "off"
+state is the same art at 45% alpha rather than a separately fabricated
+variant.
 
 ## Not yet verified / next up
 
