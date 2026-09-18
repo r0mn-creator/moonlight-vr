@@ -619,3 +619,45 @@ heuristic fighting the page's intentional dark palette - fixed with an
 explicit `color-scheme: dark`) before touching real Android layouts,
 which caught the wrong-app-name and wrong-color-scheme mistakes for free
 without needing a device round-trip.
+
+## v1.0: pointer polish, a real favorites bug, and out of beta
+
+**In-VR laser pointer restyled to match Quest's own system pointer.**
+Beam width 0.010m -> 0.004m, cursor dot 0.022m -> 0.014m, matching Meta's
+own documented convention for a system-style laser (0.003-0.005m) - ours
+read noticeably thicker before. Studied an actual reference screenshot of
+Quest's system pointer (visible on the PC-select screen, which is a 2D
+panel Quest renders its own pointer for) closely and found two more real
+details worth matching: the dot doesn't touch the beam at all (a visible
+gap), and the beam fades at both ends rather than being a uniform line -
+this app's beam already faded both ends (`lengthFade` in
+`uploadPointerArt()`), so that part needed no change. The gap did need
+one: pulled the beam's rendered geometry back 2.5cm from the actual
+target point (leaving `start` anchored at the hand) rather than widening
+the texture's own alpha fade, since which physical end of the texture
+maps to hand-vs-target isn't guaranteed (an existing comment on
+`lengthFade` already flags this) - a geometric pullback from the known
+target-side endpoint sidesteps that ambiguity entirely. Also: the cursor
+dot used to disappear completely while aiming at nothing (`beamFree`,
+"no target, no cursor" was the original reasoning) - now it stays
+visible but bigger (0.022m) than the on-target size, since hiding it
+entirely read as the pointer vanishing rather than just being imprecise
+right now. **Confirmed via research, not guessed**: there is no OpenXR
+API for an immersive session to borrow the system's own pointer
+rendering - that mechanism is exclusive to 2D panel apps, so matching its
+*style* by hand is the actual ceiling here, not a config to unlock.
+
+**Real bug found in the new favorites feature**: the star badge
+disappeared after exiting a streaming session. Diagnosis: the toggle
+wrote via `SharedPreferences.apply()`, whose disk write is asynchronous -
+favoriting a card is immediately followed by launching straight into a
+heavy new Activity, a real window for Android to reclaim the process
+under memory pressure before that write ever reaches disk. Switched to
+`commit()` for this one write (rare enough that the synchronous cost is
+free). Not independently reproduced/confirmed by re-testing the exact
+sequence, but this is a real, known class of bug that matches the
+symptom precisely.
+
+**Shipped as v1.0** (`versionName`/`versionCode` bumped, GitHub release
+published, non-prerelease) - the first release considered stable enough
+to leave the beta line, covering everything in this file since beta05.
