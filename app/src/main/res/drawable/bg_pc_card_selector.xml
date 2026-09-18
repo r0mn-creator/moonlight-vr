@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Same two colors the rest of the app already uses (ml_surface for panels,
+     ml_pill_active white for an active/selected state) - just applied to a
+     grid card instead of a tab pill. -->
+<selector xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:state_focused="true" android:drawable="@drawable/bg_pc_card_focused"/>
+    <item android:state_pressed="true" android:drawable="@drawable/bg_pc_card_focused"/>
+    <item android:drawable="@drawable/bg_pc_card"/>
+</selector>

@@ -1,11 +1,23 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- android:gravity is a no-op here - RelativeLayout (this view's real
+     parent, pcFragmentContainer) doesn't honor a child's own gravity
+     attribute for centering. numColumns is a placeholder - PcGridAdapter
+     sets the real value (capped to however many PCs are actually there)
+     once it's attached, so a short list doesn't leave the grid stuck at
+     "auto_fit"'s full-width column count with a left-aligned partial row.
+     Width stays fill_parent on purpose - GridView's wrap_content does NOT
+     shrink to numColumns*columnWidth despite what its name suggests (a
+     real, widely-reported platform quirk, confirmed here too: with
+     numColumns correctly at 2, getWidth() still measured 1472px, nowhere
+     near 2 columns' worth) - PcGridAdapter centers the populated columns
+     itself via padding instead of relying on the view's own size. -->
 <GridView xmlns:android="http://schemas.android.com/apk/res/android"
     android:id="@+id/fragmentView"
     android:layout_width="fill_parent"
     android:layout_height="fill_parent"
-    android:numColumns="auto_fit"
-    android:columnWidth="160dp"
-    android:stretchMode="spacingWidthUniform"
+    android:numColumns="4"
+    android:columnWidth="@dimen/pc_card_column_width"
+    android:stretchMode="none"
     android:focusable="true"
     android:focusableInTouchMode="true"
     android:nextFocusLeft="@id/settingsButton"

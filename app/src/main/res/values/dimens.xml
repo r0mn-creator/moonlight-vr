@@ -6,4 +6,12 @@
     <dimen name="tv_channel_logo_width">80dp</dimen>
     <dimen name="tv_channel_logo_height">80dp</dimen>
 
+    <!-- Shared between pc_grid_view.xml's columnWidth/PcGridAdapter's own
+         centering math (see updateColumnCount) and pc_grid_item.xml's real
+         card+padding footprint - one value each, not copies that can drift
+         apart. Card itself is 200x210dp with 14dp padding on every side,
+         so column width = 200+14*2 = 228, row height = 210+14*2 = 238. -->
+    <dimen name="pc_card_column_width">228dp</dimen>
+    <dimen name="pc_card_row_height">238dp</dimen>
+
 </resources>
