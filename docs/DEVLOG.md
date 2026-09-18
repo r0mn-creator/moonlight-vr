@@ -513,28 +513,31 @@ attribute at all (defaulting to visible), while `productivityPanel`
 right below it in the same file *did* get hidden, which is presumably
 why this got missed - it looked done. Fixed.
 
-**Ambient glow now samples all four corners, not one average for the
-whole frame.** The v1 downscale (`GLOW_TEX_SIZE` 8x8 box filter) used to
-average all 64 texels into one `(r,g,b)` - a flat wash, not real bias
-lighting. `computeGlowColor()` now averages each quadrant of that same
-8x8 buffer separately into four corner colours
-(`ctx->glowCornerR/G/B[GLOW_CORNER_TL/TR/BL/BR]`), and `updateGlowHalo()`
-bilinearly blends between them per texel based on the same `(nx, ny)`
-coordinates it already uses for the fade shape - standard 4-corner lerp,
-so the halo now actually picks up what colour is near each edge of the
-screen instead of tinting uniformly. No new render pass or texture size
-change; same downscale buffer, split differently on the CPU side.
+**Ambient glow now samples eight regions around the frame, not one
+average for the whole screen.** The v1 downscale (`GLOW_TEX_SIZE` 8x8 box
+filter) used to average every texel into one `(r,g,b)` - a flat wash, not
+real bias lighting. First pass split that into four corners
+(bilinearly blended); per feedback that more regions would read better,
+went straight to eight - four corners plus four edge midpoints, sampled
+from a 3x3 grid (`GLOW_TEX_SIZE` moved 8->9 so it divides evenly into
+nine 3x3 blocks, the centre one discarded) and blended per halo texel via
+inverse-distance weighting across all eight (`GLOW_SAMPLE_TL`..`BR`),
+which generalises to any sample count cleanly instead of needing bespoke
+interpolation math. Also caught and fixed a real bug in the same pass:
+the corner/edge sampling had top and bottom inverted (this app's
+downscale shader already un-flips the frame relative to raw GL's
+bottom-up `glReadPixels` convention, so the original code's assumption
+was backwards) - confirmed on-device with a scene that had an
+unambiguous red light source at the top, which the glow was showing at
+the bottom before the fix.
+
+**Both fixes (landscape tab-bar, 8-region glow with the corrected
+orientation) confirmed working on-device** against the release build,
+including the same red-light bar scene used to catch the orientation bug
+in the first place.
 
 ## Not yet verified / next up
 
-- The multi-corner glow and the tab-bar fix, on a real headset - built and
-  installed but not yet visually confirmed (couldn't get a fresh
-  screenshot from the device this round).
-- Whether the corner quadrant's top/bottom assignment in
-  `computeGlowColor()` (row 0 of `glReadPixels` = bottom, per standard GL
-  convention) actually lines up with `updateGlowHalo()`'s own `ny`
-  convention (0 = top) - reasoned through, not confirmed visually. If the
-  glow's top/bottom colours look swapped, that's the first place to look.
 - The 3D-effect toggle specifically: repeated on/off cycling within one
   session (does `reconcileDepthThread()` actually behave under rapid
   double-taps, does the depth EGL context survive several start/stop
@@ -543,6 +546,17 @@ change; same downscale buffer, split differently on the CPU side.
   Settings) haven't had a pass yet, and are actually easier to iterate on
   without a headset worn (adb can drive/screenshot a normal Activity in a
   way it can't drive an immersive OpenXR session).
-- Whether the fixes in the previous entry actually look/feel right on the
-  release build specifically (all verification so far happened on the
-  now-removed debug build).
+- Adopting Meta's `XR_FB_hand_tracking_aim` extension for a ready-made aim
+  pose + per-finger pinch strength, instead of this app's hand-rolled
+  joint-distance pinch detection (`jointPinching()`) and hand-rolled ray
+  (`ctx->handRay[]`) - researched, not started. Likely why this app's ray
+  visuals look different from other apps' hand-tracking pointers. Confirmed
+  NOT expected to fix the keyboard-under-hand-tracking limitation (that's
+  gated by a separate hand-tracking "frequency" setting per Meta's docs,
+  which this app's manifest doesn't even override) - see
+  `project_moonlight_vr_custom_handtracking_keyboard_lead` in memory.
+- The keyboard icon remains removed pending a Horizon OS fix or further
+  investigation into hand-tracking frequency.
+- GitHub release: beta05 was replaced with the top-bar-bugfix build;
+  beta06 (landscape tab-bar fix + 8-region glow, this entry) is committed
+  and pushed to `master` but not yet cut as its own GitHub release.
