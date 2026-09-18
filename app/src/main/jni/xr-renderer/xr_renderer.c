@@ -264,7 +264,7 @@
 
 // Productivity mode, Phase 1: a fixed default arrangement for N flat
 // screens. No rotate/arrange controls yet (that is Phase 2) - these are
-// just sane constants so there is something to look at. See BRAINSTORM.md.
+// just sane constants so there is something to look at.
 #define PRODUCTIVITY_SCREEN_COUNT 3
 #define PRODUCTIVITY_DISTANCE_M 2.2f
 #define PRODUCTIVITY_SCREEN_WIDTH_M 1.35f
@@ -687,7 +687,7 @@ typedef struct {
     // Productivity mode: N flat screens instead of the single stereo one
     // above. Phase 1 only - fixed default arrangement, no grab/rotate/
     // arrange controls yet (that's all still ctx->screenPose/grab* below,
-    // untouched and unused while this is set). See BRAINSTORM.md.
+    // untouched and unused while this is set).
     int productivityMode;
 
     // Where the screen actually is. Seeded from the distance and width
@@ -3110,7 +3110,7 @@ static void updatePlacement(XrCtx* ctx, float distance, float quadWidth) {
 
 // Phase 1 fixed layout: N screens spaced evenly left-to-right on a shallow
 // arc, all facing back toward the origin. No curve/distance/height/spacing
-// controls yet - see BRAINSTORM.md Phase 2. The small-angle approximation
+// controls yet (that's Phase 2). The small-angle approximation
 // (arc length ~= chord length) is fine here since this is just a default,
 // not a value a slider needs to be precise about.
 static XrPosef productivityScreenPose(int index) {

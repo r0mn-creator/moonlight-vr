@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="moonlight-xr-logo-transparent.png" height="200" alt="moonlight-xr-logo"><br>
+  <img src="moonlight-xr-plus-logo-transparent.png" height="130" alt="moonlightxr-plus-logo"><br>
   <a href="https://ko-fi.com/moonlightxr">
     <img src="https://img.shields.io/badge/ko--fi-support%20the%20original-FF5E5B?style=for-the-badge&logo=ko-fi&logoColor=white" height="35" alt="Ko-fi">
   </a>
@@ -9,26 +9,32 @@
   </a>
 </p>
 
-# Virtual Moonlight
+# MoonlightXR Plus
 
 A fork of [Moonlight XR](https://github.com/Gilleece/moonlight-android-xr) by **Sean Gilleece** — itself a fork of
 [Moonlight for Android](https://github.com/moonlight-stream/moonlight-android) — which runs as a
 native OpenXR application and shows the game stream in stereoscopic 3D on a headset. All credit
-for the stereo/depth pipeline below belongs to gilleece's original work; please support it at the
-Ko-fi link above.
+for the stereo/depth pipeline below, and the app itself, belongs to gilleece's original work;
+please support it at the Ko-fi link above.
 
 ## About this fork
 
-This fork adds a **Productivity mode** alongside the existing Gaming/remote-play experience:
-multi-monitor virtual desktops for real work (not just games) inside the headset, without losing
-what Moonlight already does well. Full design reasoning lives in
-[`docs/BRAINSTORM.md`](docs/BRAINSTORM.md). Status: early UI scaffolding and native rendering work,
-gearing toward Quest 3 first. If a companion fork of Apollo/Sunshine ever gets built for this
-project, it'll be named **Virtual Sunshine** to match.
+This fork is a quality-of-life pass over the original — it doesn't add performance or streaming
+capability beyond what Moonlight XR already does, it just makes the existing VR experience nicer
+to use day to day:
+
+- A redesigned in-VR top bar (Exit, passthrough brightness, screen curvature, a live 3D-effect
+  toggle), with a screen-edge ambient glow that picks up colour from the streamed content itself
+- A rounded-card PC-select screen with favorites (hold a card for 2 seconds to pin it)
+- An in-VR laser pointer restyled to match Quest's own system pointer more closely
+- A number of smaller fixes found through actual on-headset testing — the detailed history is in
+  [`docs/DEVLOG.md`](docs/DEVLOG.md)
+
+Built and tested primarily on Quest 3.
 
 ## Requirements
 
-Virtual Moonlight is a client — it needs a PC on the same network running a streaming host.
+MoonlightXR Plus is a client — it needs a PC on the same network running a streaming host.
 [**Apollo**](https://github.com/ClassicOldSong/Apollo) is the preferred host (more features, e.g.
 better HDR/adaptive-sync support), but [Sunshine](https://github.com/LizardByte/Sunshine) works
 too if that's what you already have set up. If you don't have either installed yet, follow the
@@ -96,9 +102,9 @@ resize it. Either grip or trigger holds a handle, since apps disagree about
 which one should. Where you leave it is where it will be next time, and
 recentring the headset puts it back to where a fresh install starts.
 
-To the left of the move bar is a button that opens a grid of environments:
-passthrough, an empty black room, and the bundled 360 photos. Passthrough is
-in the grid as well as in the settings, so it can be switched mid stream.
+A top bar above the screen has Exit, a passthrough-brightness slider (dims the room around the
+screen, all the way to black at one end), a screen-curvature slider, and a live 3D-effect toggle —
+all adjustable mid-stream, no menu diving required.
 
 ## Settings
 
@@ -110,7 +116,7 @@ in the grid as well as in the settings, so it can be switched mid stream.
 | Head locked screen | off | Screen follows your view rather than staying in the world |
 | Screen distance | 3.0 m | |
 | Screen width | 3.0 m | 3 m wide at 3 m away is about 53 degrees |
-| Passthrough mode | off | Show your room behind the screen. Costs performance, turn it back off if the stream suffers. Also reachable from the environment grid while streaming |
+| Passthrough mode | off | Show your room behind the screen. Costs performance, turn it back off if the stream suffers. Also adjustable from the top bar's brightness slider while streaming |
 | Realtime 3D mode | V1.0 - MiDaS Based 3D | "Off" streams flat, the rest are test patterns |
 | Stereo separation | 0.5 % | Of frame width. Above about 0.5 the picture is not any deeper, only harder on the eyes |
 | Screen curvature | 0 | 0 is flat, higher wraps the screen around you |

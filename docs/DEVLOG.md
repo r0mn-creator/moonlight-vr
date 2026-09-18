@@ -1,9 +1,8 @@
 # Development log
 
 Where shipped work, architecture decisions, and technical history get
-recorded — what was built, why, and what's still unverified. Distinct from
-`BRAINSTORM.md`, which is for actual brainstorming/ideation sessions, not a
-running project record.
+recorded — what was built, why, and what's still unverified. This is a
+running project record, not a design-reasoning doc.
 
 ## UI/UX reset: environment picker removed, one shared top bar for both modes
 

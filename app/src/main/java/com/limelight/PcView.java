@@ -71,8 +71,7 @@ public class PcView extends Activity implements AdapterFragmentCallbacks {
     private boolean freezeUpdates, runningPolling, inForeground, completeOnCreateCalled;
 
     // Gaming/Productivity mode tabs. UI only for now — no session parameters
-    // are actually sent yet; see BRAINSTORM.md for the design this is
-    // scaffolding for. The PC list itself (pcGridAdapter, above) is shared
+    // are actually sent yet. The PC list itself (pcGridAdapter, above) is shared
     // by both tabs on purpose.
     private TextView tabGaming, tabProductivity;
     private View productivityPanel;

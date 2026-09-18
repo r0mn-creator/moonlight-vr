@@ -267,8 +267,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         if (prefConfig.productivityMode) {
             // Phase 1: naive uniform 3-wide request, assuming 3 identical
             // landscape monitors. Real per-monitor geometry (resolution,
-            // mixed orientation) isn't known yet - see BRAINSTORM.md's
-            // multi-screen scoping notes for why that can't come from the
+            // mixed orientation) isn't known yet and can't come from the
             // stream itself. Height is left alone.
             prefConfig.width *= 3;
             // Per-screen depth isn't built yet regardless of the toggle -
@@ -2661,8 +2660,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                         return;
                     }
 
-                    // Empty until the host exposes its pmode_displays list
-                    // (see BRAINSTORM.md) - every screen falls back to
+                    // Empty until the host exposes its pmode_displays list -
+                    // every screen falls back to
                     // Apollo's default output for now, which is enough to
                     // verify the pipeline (N connections, N decodes, N
                     // renders) before real per-monitor targeting exists.

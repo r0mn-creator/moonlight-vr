@@ -93,7 +93,7 @@
     <string name="conn_terminated_msg">The connection was terminated.</string>
     <string name="error_code_prefix">Error code:</string>
 
-    <!-- Gaming / Productivity mode tabs (UI only for now — see BRAINSTORM.md) -->
+    <!-- Gaming / Productivity mode tabs (UI only for now) -->
     <string name="mode_tab_gaming">🎮 Gaming</string>
     <string name="mode_tab_productivity">🖥 Productivity</string>
     <string name="productivity_monitors_info">Uses this PC\'s own monitors if it has more than one, or adds virtual ones to make 3.</string>

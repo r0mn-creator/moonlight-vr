@@ -7,10 +7,8 @@
     android:background="@color/ml_bg_panel_gaming"
     tools:context=".PcView" >
 
-    <!-- Gaming/Productivity mode toggle, hidden for now: this build of
-         Virtual Moonlight is Gaming-only while Productivity Mode continues
-         development in a separate private repo. Set back to "visible" to
-         re-enable once PMode is merged back - PcView.java's
+    <!-- Leftover mode-switch tab bar from a feature that no longer ships in
+         this app. Kept hidden rather than deleted; PcView.java's
          initializeModeTabs() call is commented out to match. -->
     <LinearLayout
         android:id="@+id/modeTabBar"

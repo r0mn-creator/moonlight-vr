@@ -268,11 +268,11 @@
             android:name=".binding.input.driver.UsbDriverService"
             android:label="Usb Driver Service" />
 
-        <!-- Virtual Moonlight PMode: each Productivity-mode screen gets its
-             own process. moonlight-common-c only supports one connection per
-             process (see the living doc), so this is what gives each screen
-             an independent connection - process-level globals are naturally
-             separate instances, with zero changes to that library. -->
+        <!-- Leftover from a multi-screen mode that no longer ships in this
+             app: each screen got its own process because
+             moonlight-common-c only supports one connection per process,
+             so process-level globals gave each screen an independent
+             connection with zero changes to that library. -->
         <service
             android:name=".pmode.PModeScreenService1"
             android:process=":pmode_screen1"
