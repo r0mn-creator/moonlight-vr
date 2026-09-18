@@ -79,7 +79,7 @@
 // controller does not throw a laser across the picture, and it goes away again
 // once a controller has been put down
 #define POINTER_WAKE_SEC 0.5f
-#define POINTER_SLEEP_SEC 5.0f
+#define POINTER_SLEEP_SEC 9.0f
 // Metres per second and radians per second. A resting hand manages about a
 // tenth of these.
 #define POINTER_MOVE_SPEED 0.06f

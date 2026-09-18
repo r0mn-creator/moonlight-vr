@@ -89,22 +89,21 @@ you build it:
   colour edges, so this shows up as depth values being slightly stale rather than as misaligned
   edges.
 
-## Using the controllers
+## Controls
 
-The controllers work as a mouse. Point at the screen and a laser appears, the
-trigger is left click, the thumbstick scrolls. It wakes on deliberate movement
-rather than on any nudge, and retires itself after five seconds of stillness.
-The thumbstick click turns the whole thing off if you would rather not have it.
+Quest Touch controllers and hand tracking both drive a laser pointer at the
+screen — this is not gamepad input, an Xbox controller won't control the UI.
+Trigger (or pinch) clicks, thumbstick scrolls, thumbstick click toggles the
+pointer off entirely. It wakes on deliberate movement and retires after 9
+seconds of stillness.
 
-The screen itself can be moved and resized in place. Hover under it and a bar
-appears to drag it around in 6DOF, hover any corner and a bracket appears to
-resize it. Either grip or trigger holds a handle, since apps disagree about
-which one should. Where you leave it is where it will be next time, and
-recentring the headset puts it back to where a fresh install starts.
+The screen can be grabbed and resized in place: hover under it for a drag bar,
+hover a corner for a resize bracket, grip or trigger holds either one.
+Position persists across sessions; recentring resets it.
 
-A top bar above the screen has Exit, a passthrough-brightness slider (dims the room around the
-screen, all the way to black at one end), a screen-curvature slider, and a live 3D-effect toggle —
-all adjustable mid-stream, no menu diving required.
+A top bar above the screen has Exit, passthrough brightness (down to full
+black), screen curvature, and a live 3D-effect toggle, all adjustable
+mid-stream.
 
 ## Settings
 
@@ -161,7 +160,7 @@ The APK lands in `app/build/outputs/apk/nonRoot/debug/`. Install it with `adb in
 The release build runs R8 and produces an unsigned APK, so it has to be signed before a headset
 will install it. Create a keystore once:
 
-    keytool -genkeypair -v -keystore release.keystore -alias moonlightvr \
+    keytool -genkeypair -v -keystore release.keystore -alias moonlightxrplus \
         -keyalg RSA -keysize 2048 -validity 10000
 
 Then build, align and sign:
@@ -169,10 +168,10 @@ Then build, align and sign:
     ./gradlew assembleNonRootRelease
     zipalign -f 4 \
         app/build/outputs/apk/nonRoot/release/app-nonRoot-release-unsigned.apk \
-        moonlight-vr-release.apk
-    apksigner sign --ks release.keystore moonlightvr moonlight-vr-release.apk
-    apksigner verify moonlight-vr-release.apk
-    adb install -r moonlight-vr-release.apk
+        moonlightxrplus-release.apk
+    apksigner sign --ks release.keystore moonlightxrplus moonlightxrplus-release.apk
+    apksigner verify moonlightxrplus-release.apk
+    adb install -r moonlightxrplus-release.apk
 
 `zipalign` and `apksigner` are in `$ANDROID_HOME/build-tools/<version>/`. The release build uses
 the `.unofficial` application ID suffix that upstream asks forks to keep, so it installs alongside
