@@ -183,7 +183,14 @@ public class PcGridAdapter extends GenericGridAdapter<PcView.ComputerObject> {
         if (!favorites.remove(uuid)) {
             favorites.add(uuid);
         }
-        prefs.edit().putStringSet(FAVORITES_PREF_KEY, favorites).apply();
+        // commit(), not apply() - apply()'s write to disk is asynchronous,
+        // and toggling a favorite is immediately followed by the user
+        // launching straight into a heavy new Activity (a game-streaming
+        // session), a real opportunity for Android to reclaim this
+        // process under memory pressure before that pending write ever
+        // reaches disk. This is a rare, one-off write - the synchronous
+        // cost of commit() here is not worth trading away reliability for.
+        prefs.edit().putStringSet(FAVORITES_PREF_KEY, favorites).commit();
         sortList();
         notifyDataSetChanged();
     }
