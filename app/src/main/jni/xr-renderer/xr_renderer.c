@@ -3524,8 +3524,11 @@ Java_com_limelight_binding_video_XrRenderer_nativeInit(JNIEnv* env, jobject thiz
     ctx->pointerBeta = POINTER_BETA;
     ctx->pointerWake = POINTER_WAKE_SEC;
     ctx->pointerSleep = POINTER_SLEEP_SEC;
-    // 1 cm reads as a thin line at 3 m without disappearing
-    ctx->beamWidth = 0.010f;
+    // Matches Meta's own documented convention for a system-style laser
+    // (0.003-0.005m) instead of the previous 1cm, which read noticeably
+    // thicker than Quest's own pointer for 2D panels - the goal is for
+    // this to feel like the same visual language, not a custom one.
+    ctx->beamWidth = 0.004f;
     // Comfort comes from absolute disparity and depth comes from the steps
     // between objects, so the overall shape is pulled toward the screen plane
     // while the local detail is boosted. Measured on captured frames this is
@@ -5939,8 +5942,11 @@ Java_com_limelight_binding_video_XrRenderer_nativeEndFrame(JNIEnv* env, jobject 
                 dotLayer.pose.position.x = end.x + dotZ.x * 0.012f;
                 dotLayer.pose.position.y = end.y + dotZ.y * 0.012f;
                 dotLayer.pose.position.z = end.z + dotZ.z * 0.012f;
-                dotLayer.size.width = 0.022f;
-                dotLayer.size.height = 0.022f;
+                // Shrunk alongside beamWidth above, same reasoning - Quest's
+                // own system cursor for 2D panels reads noticeably smaller
+                // than this used to be.
+                dotLayer.size.width = 0.014f;
+                dotLayer.size.height = 0.014f;
                 layers[layerCount++] = (const XrCompositionLayerBaseHeader*)&dotLayer;
             }
         }
