@@ -209,14 +209,20 @@
 #define DEPTH_MODE_MODEL 6
 
 #define DEPTH_TEX_SIZE 256
-// Small enough that reading it back every frame is free. Averaged in four
-// quadrants (see GLOW_CORNER_*), not as one whole-frame colour - 8 divides
-// cleanly into four 4x4 corner blocks.
-#define GLOW_TEX_SIZE 8
-#define GLOW_CORNER_TL 0
-#define GLOW_CORNER_TR 1
-#define GLOW_CORNER_BL 2
-#define GLOW_CORNER_BR 3
+// Small enough that reading it back every frame is free. Averaged into
+// GLOW_SAMPLE_COUNT regions (see GLOW_SAMPLE_* below), not as one
+// whole-frame colour - 9 divides cleanly into a 3x3 grid of 3x3 blocks,
+// eight of which (everything but the centre) feed the glow.
+#define GLOW_TEX_SIZE 9
+#define GLOW_SAMPLE_COUNT 8
+#define GLOW_SAMPLE_TL 0
+#define GLOW_SAMPLE_T  1
+#define GLOW_SAMPLE_TR 2
+#define GLOW_SAMPLE_L  3
+#define GLOW_SAMPLE_R  4
+#define GLOW_SAMPLE_BL 5
+#define GLOW_SAMPLE_B  6
+#define GLOW_SAMPLE_BR 7
 
 // setprop this to any new value to dump one frame's worth of warp inputs and
 // outputs, so shader changes can be tried on captured frames off device
@@ -445,11 +451,14 @@ typedef struct {
     GLint glowTexMatrixUniform;
     GLuint glowTexture;
     GLuint glowFbo;
-    // One colour per screen corner (see GLOW_CORNER_* below), bilinearly
-    // blended across the halo in updateGlowHalo() - v1 only ever had one
-    // averaged colour for the whole frame, which read as a flat wash
-    // rather than actual bias lighting picking up what's near each edge.
-    float glowCornerR[4], glowCornerG[4], glowCornerB[4];
+    // One colour per edge/corner sample (see GLOW_SAMPLE_* below),
+    // inverse-distance blended across the halo in updateGlowHalo() - v1
+    // only ever had one averaged colour for the whole frame, which read
+    // as a flat wash rather than actual bias lighting picking up what's
+    // near each edge.
+    float glowSampleR[GLOW_SAMPLE_COUNT];
+    float glowSampleG[GLOW_SAMPLE_COUNT];
+    float glowSampleB[GLOW_SAMPLE_COUNT];
     // User on/off for the effect above - separate from whether it's even
     // computed (computeGlowColor() is skipped entirely when this is off, so
     // disabling it also saves the per-frame downscale cost, not just the
@@ -1652,8 +1661,8 @@ static int initGlow(XrCtx* ctx) {
     // Full passthrough (the default) never shows the dim sphere at all, so
     // starting white is harmless - it only ever multiplies visible alpha
     // once the room actually darkens, by which point a real frame has run.
-    for (int c = 0; c < 4; c++) {
-        ctx->glowCornerR[c] = ctx->glowCornerG[c] = ctx->glowCornerB[c] = 1.0f;
+    for (int c = 0; c < GLOW_SAMPLE_COUNT; c++) {
+        ctx->glowSampleR[c] = ctx->glowSampleG[c] = ctx->glowSampleB[c] = 1.0f;
     }
     return 1;
 }
@@ -4805,11 +4814,12 @@ static void runOffsetSearch(XrCtx* ctx, float separation) {
 
 // Box-filter the whole frame down to GLOW_TEX_SIZE, same shape as
 // nativeCaptureDepthInput's downscale but independent of it, then average
-// each quadrant separately instead of the whole buffer - four corner
-// colours instead of v1's single whole-frame average, so the halo can
-// actually pick up what's near each edge instead of one flat wash. Only
-// called while the dim sphere is actually visible (see the caller), so
-// this costs nothing at the default full-passthrough level.
+// each of the eight 3x3 blocks around the edge of that 3x3 grid separately
+// (the centre block is discarded) instead of the whole buffer - eight
+// edge/corner colours instead of v1's single whole-frame average, so the
+// halo can actually pick up what's near each edge instead of one flat
+// wash. Only called while the dim sphere is actually visible (see the
+// caller), so this costs nothing at the default full-passthrough level.
 static void computeGlowColor(XrCtx* ctx, const float* texMatrix) {
     if (ctx->glowFbo == 0) {
         return;
@@ -4836,31 +4846,47 @@ static void computeGlowColor(XrCtx* ctx, const float* texMatrix) {
     glReadPixels(0, 0, GLOW_TEX_SIZE, GLOW_TEX_SIZE, GL_RGBA, GL_UNSIGNED_BYTE, px);
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
-    // glReadPixels' row 0 is the bottom of the image (standard GL
-    // convention, untouched here) - so the low-y half of the buffer is the
-    // bottom of the frame, the high-y half is the top.
-    const int half = GLOW_TEX_SIZE / 2;
-    long sumR[4] = { 0, 0, 0, 0 };
-    long sumG[4] = { 0, 0, 0, 0 };
-    long sumB[4] = { 0, 0, 0, 0 };
+    // Row 0 of glReadPixels is measured against the actual downscaled
+    // frame to be the TOP of the image here, not GL's usual bottom-up
+    // convention - this app's downscale shader/texMatrix combination
+    // already un-flips it, confirmed by a top/bottom-swapped glow on
+    // device before this was corrected.
+    static const int sampleForCell[3][3] = {
+        { GLOW_SAMPLE_TL, GLOW_SAMPLE_T, GLOW_SAMPLE_TR },
+        { GLOW_SAMPLE_L,  -1,            GLOW_SAMPLE_R  },
+        { GLOW_SAMPLE_BL, GLOW_SAMPLE_B, GLOW_SAMPLE_BR },
+    };
+    const int block = GLOW_TEX_SIZE / 3;
+    long sumR[GLOW_SAMPLE_COUNT] = { 0 };
+    long sumG[GLOW_SAMPLE_COUNT] = { 0 };
+    long sumB[GLOW_SAMPLE_COUNT] = { 0 };
     for (int y = 0; y < GLOW_TEX_SIZE; y++) {
-        int top = y >= half;
+        int gridRow = y / block;
         for (int x = 0; x < GLOW_TEX_SIZE; x++) {
-            int right = x >= half;
-            int corner = (top ? GLOW_CORNER_TL : GLOW_CORNER_BL) + (right ? 1 : 0);
+            int gridCol = x / block;
+            int sample = sampleForCell[gridRow][gridCol];
+            if (sample < 0) {
+                continue;
+            }
             const unsigned char* p = px + ((y * GLOW_TEX_SIZE) + x) * 4;
-            sumR[corner] += p[0];
-            sumG[corner] += p[1];
-            sumB[corner] += p[2];
+            sumR[sample] += p[0];
+            sumG[sample] += p[1];
+            sumB[sample] += p[2];
         }
     }
-    const int quadrantCount = half * half;
-    for (int c = 0; c < 4; c++) {
-        ctx->glowCornerR[c] = (float)sumR[c] / (quadrantCount * 255.0f);
-        ctx->glowCornerG[c] = (float)sumG[c] / (quadrantCount * 255.0f);
-        ctx->glowCornerB[c] = (float)sumB[c] / (quadrantCount * 255.0f);
+    const int blockCount = block * block;
+    for (int c = 0; c < GLOW_SAMPLE_COUNT; c++) {
+        ctx->glowSampleR[c] = (float)sumR[c] / (blockCount * 255.0f);
+        ctx->glowSampleG[c] = (float)sumG[c] / (blockCount * 255.0f);
+        ctx->glowSampleB[c] = (float)sumB[c] / (blockCount * 255.0f);
     }
 }
+
+// Normalised (x, y) position of each GLOW_SAMPLE_* colour around the
+// screen's own footprint, in the same 0..1 space as updateGlowHalo()'s own
+// nx/ny - order matches the GLOW_SAMPLE_TL..BR indices exactly.
+static const float GLOW_SAMPLE_X[GLOW_SAMPLE_COUNT] = { 0.0f, 0.5f, 1.0f, 0.0f, 1.0f, 0.0f, 0.5f, 1.0f };
+static const float GLOW_SAMPLE_Y[GLOW_SAMPLE_COUNT] = { 0.0f, 0.0f, 0.0f, 0.5f, 0.5f, 1.0f, 1.0f, 1.0f };
 
 // The halo's shape is a soft ring hugging the screen's own rectangle,
 // transparent inside it (the screen quad draws on top there regardless,
@@ -4899,26 +4925,27 @@ static void updateGlowHalo(XrCtx* ctx) {
             // eases both ends of it so it genuinely looks like light
             // dissipating rather than a translucent rectangle with a cutoff.
             a = a * a * (3.0f - 2.0f * a);
-            // Bilinear blend of the four corner colours - ny near 0 is the
-            // top of the screen (matching computeGlowColor()'s own top/
-            // bottom split), so this is a standard 4-corner lerp, not a
-            // single flat colour like v1. This is what makes the halo
-            // actually pick up what's near each edge instead of one wash.
-            float top = 1.0f - ny, left = 1.0f - nx;
-            float wTL = left * top, wTR = nx * top;
-            float wBL = left * ny, wBR = nx * ny;
-            float rf = ctx->glowCornerR[GLOW_CORNER_TL] * wTL
-                    + ctx->glowCornerR[GLOW_CORNER_TR] * wTR
-                    + ctx->glowCornerR[GLOW_CORNER_BL] * wBL
-                    + ctx->glowCornerR[GLOW_CORNER_BR] * wBR;
-            float gf = ctx->glowCornerG[GLOW_CORNER_TL] * wTL
-                    + ctx->glowCornerG[GLOW_CORNER_TR] * wTR
-                    + ctx->glowCornerG[GLOW_CORNER_BL] * wBL
-                    + ctx->glowCornerG[GLOW_CORNER_BR] * wBR;
-            float bf = ctx->glowCornerB[GLOW_CORNER_TL] * wTL
-                    + ctx->glowCornerB[GLOW_CORNER_TR] * wTR
-                    + ctx->glowCornerB[GLOW_CORNER_BL] * wBL
-                    + ctx->glowCornerB[GLOW_CORNER_BR] * wBR;
+            // Inverse-distance blend of all eight edge/corner samples - ny
+            // near 0 is the top of the screen (matching computeGlowColor()'s
+            // own row convention), so a texel just picks up more of
+            // whichever sample(s) it's physically closest to. Generalises
+            // past four corners cleanly, unlike a hand-written bilinear
+            // lerp, which is why this replaced it going from four samples
+            // to eight.
+            float wsum = 0.0f, weight[GLOW_SAMPLE_COUNT];
+            for (int s = 0; s < GLOW_SAMPLE_COUNT; s++) {
+                float ddx = nx - GLOW_SAMPLE_X[s];
+                float ddy = ny - GLOW_SAMPLE_Y[s];
+                weight[s] = 1.0f / (ddx * ddx + ddy * ddy + 0.001f);
+                wsum += weight[s];
+            }
+            float rf = 0.0f, gf = 0.0f, bf = 0.0f;
+            for (int s = 0; s < GLOW_SAMPLE_COUNT; s++) {
+                float wn = weight[s] / wsum;
+                rf += ctx->glowSampleR[s] * wn;
+                gf += ctx->glowSampleG[s] * wn;
+                bf += ctx->glowSampleB[s] * wn;
+            }
             unsigned char r = (unsigned char)(rf * 255.0f + 0.5f);
             unsigned char g = (unsigned char)(gf * 255.0f + 0.5f);
             unsigned char b = (unsigned char)(bf * 255.0f + 0.5f);
