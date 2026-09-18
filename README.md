@@ -26,6 +26,14 @@ what Moonlight already does well. Full design reasoning lives in
 gearing toward Quest 3 first. If a companion fork of Apollo/Sunshine ever gets built for this
 project, it'll be named **Virtual Sunshine** to match.
 
+## Requirements
+
+Virtual Moonlight is a client — it needs a PC on the same network running a streaming host.
+[**Apollo**](https://github.com/ClassicOldSong/Apollo) is the preferred host (more features, e.g.
+better HDR/adaptive-sync support), but [Sunshine](https://github.com/LizardByte/Sunshine) works
+too if that's what you already have set up. If you don't have either installed yet, follow the
+setup instructions in whichever repo you pick before pairing this app with your PC.
+
 ## How the existing stereo/depth pipeline works
 
 The stereo is generated entirely on the headset. A normal mono stream arrives from the PC exactly
