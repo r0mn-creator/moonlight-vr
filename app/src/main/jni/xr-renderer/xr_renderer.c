@@ -5919,9 +5919,11 @@ Java_com_limelight_binding_video_XrRenderer_nativeEndFrame(JNIEnv* env, jobject 
 
             // Cursor sits just off the surface facing the viewer, which works
             // on the cylinder as well as the flat screen. Independent of the
-            // ribbon: a gaze has a cursor and no ray, a ray aimed at nothing
-            // has no cursor.
-            if (!ctx->beamFree) {
+            // ribbon: a gaze has a cursor and no ray. A ray aimed at nothing
+            // still gets one too (beamFree) - just a bigger, softer one,
+            // since there's nothing to precisely land on and a small dot
+            // reads as more precise than the aim actually is right now.
+            {
                 Vec3 dotZ = vecNorm(vecSub(head, end));
                 Vec3 worldUp = { 0.0f, 1.0f, 0.0f };
                 Vec3 dotX = vecNorm(vecCross(worldUp, dotZ));
@@ -5942,11 +5944,13 @@ Java_com_limelight_binding_video_XrRenderer_nativeEndFrame(JNIEnv* env, jobject 
                 dotLayer.pose.position.x = end.x + dotZ.x * 0.012f;
                 dotLayer.pose.position.y = end.y + dotZ.y * 0.012f;
                 dotLayer.pose.position.z = end.z + dotZ.z * 0.012f;
-                // Shrunk alongside beamWidth above, same reasoning - Quest's
-                // own system cursor for 2D panels reads noticeably smaller
-                // than this used to be.
-                dotLayer.size.width = 0.014f;
-                dotLayer.size.height = 0.014f;
+                // On-target size shrunk alongside beamWidth above, same
+                // reasoning - Quest's own system cursor for 2D panels reads
+                // noticeably smaller than this used to be. Free-aim stays
+                // close to that original pre-shrink size.
+                float dotSize = ctx->beamFree ? 0.022f : 0.014f;
+                dotLayer.size.width = dotSize;
+                dotLayer.size.height = dotSize;
                 layers[layerCount++] = (const XrCompositionLayerBaseHeader*)&dotLayer;
             }
         }
