@@ -5896,6 +5896,20 @@ Java_com_limelight_binding_video_XrRenderer_nativeEndFrame(JNIEnv* env, jobject 
                 beamX = vecNorm(beamX);
                 Vec3 beamZ = vecCross(beamX, beamY);
 
+                // Pulled back from the true target point on purpose, same
+                // look as Quest's own system ray - it points at the target
+                // without visually touching it. Geometric, not just relying
+                // on the texture's own end-fade, since which physical end
+                // (hand vs target) lands on which texture row isn't
+                // guaranteed (see the comment on uploadPointerArt's
+                // lengthFade) - shortening the quad itself from the target
+                // end guarantees the gap regardless of that mapping.
+                const float END_GAP_M = 0.025f;
+                float renderedLength = length > END_GAP_M * 2.0f ? length - END_GAP_M : length;
+                Vec3 renderedMid = { start.x + beamY.x * (renderedLength * 0.5f),
+                                     start.y + beamY.y * (renderedLength * 0.5f),
+                                     start.z + beamY.z * (renderedLength * 0.5f) };
+
                 memset(&beamLayer, 0, sizeof(beamLayer));
                 beamLayer.type = XR_TYPE_COMPOSITION_LAYER_QUAD;
                 beamLayer.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
@@ -5908,11 +5922,11 @@ Java_com_limelight_binding_video_XrRenderer_nativeEndFrame(JNIEnv* env, jobject 
                 beamLayer.subImage.imageArrayIndex = 0;
                 beamLayer.space = space;
                 beamLayer.pose.orientation = quatFromBasis(beamX, beamY, beamZ);
-                beamLayer.pose.position.x = mid.x;
-                beamLayer.pose.position.y = mid.y;
-                beamLayer.pose.position.z = mid.z;
+                beamLayer.pose.position.x = renderedMid.x;
+                beamLayer.pose.position.y = renderedMid.y;
+                beamLayer.pose.position.z = renderedMid.z;
                 beamLayer.size.width = ctx->beamWidth;
-                beamLayer.size.height = length;
+                beamLayer.size.height = renderedLength;
                 layers[layerCount++] = (const XrCompositionLayerBaseHeader*)&beamLayer;
 
             }
