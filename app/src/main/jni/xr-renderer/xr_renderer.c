@@ -593,9 +593,14 @@ typedef struct {
     Vec3 pinchPoint[HAND_COUNT];
     int pinchPointValid[HAND_COUNT];
     // A ray built out of the joints, for runtimes that track hands but do not
-    // offer a pointer pose of their own
+    // offer a pointer pose of their own - only actually used when
+    // handTrackingAim is false, see jointPinching().
     XrPosef handRay[HAND_COUNT];
     int handRayValid[HAND_COUNT];
+    // Meta-specific ready-made aim pose + pinch strength, preferred over
+    // buildHandRay()'s shoulder-ray math and the raw thumb/index gap
+    // distance below when available - see jointPinching().
+    int handTrackingAim;
     PFN_xrCreateHandTrackerEXT pfnCreateHandTracker;
     PFN_xrDestroyHandTrackerEXT pfnDestroyHandTracker;
     PFN_xrLocateHandJointsEXT pfnLocateHandJoints;
@@ -1181,6 +1186,7 @@ static int initXrInstance(XrCtx* ctx) {
         if (!strcmp(exts[i].extensionName, XR_EXT_HAND_TRACKING_EXTENSION_NAME)) ctx->handTracking = 1;
         if (!strcmp(exts[i].extensionName, XR_EXT_EYE_GAZE_INTERACTION_EXTENSION_NAME)) ctx->eyeGaze = 1;
         if (!strcmp(exts[i].extensionName, XR_EXT_PERFORMANCE_SETTINGS_EXTENSION_NAME)) ctx->perfSettingsSupported = 1;
+        if (!strcmp(exts[i].extensionName, XR_FB_HAND_TRACKING_AIM_EXTENSION_NAME)) ctx->handTrackingAim = 1;
     }
     free(exts);
 
@@ -1189,7 +1195,7 @@ static int initXrInstance(XrCtx* ctx) {
         return 0;
     }
 
-    const char* enabledExts[10];
+    const char* enabledExts[11];
     uint32_t enabledCount = 0;
     enabledExts[enabledCount++] = XR_KHR_OPENGL_ES_ENABLE_EXTENSION_NAME;
     enabledExts[enabledCount++] = XR_KHR_ANDROID_CREATE_INSTANCE_EXTENSION_NAME;
@@ -1218,6 +1224,14 @@ static int initXrInstance(XrCtx* ctx) {
     }
     if (ctx->perfSettingsSupported) {
         enabledExts[enabledCount++] = XR_EXT_PERFORMANCE_SETTINGS_EXTENSION_NAME;
+    }
+    // Meta-specific: a ready-made aim pose + per-finger pinch strength
+    // chained onto the same xrLocateHandJointsEXT call jointPinching()
+    // already makes, instead of hand-rolling both from raw joint math -
+    // see buildHandRay()/jointPinching() for the fallback used when this
+    // isn't available (other runtimes, e.g. Pico, don't have it).
+    if (ctx->handTrackingAim) {
+        enabledExts[enabledCount++] = XR_FB_HAND_TRACKING_AIM_EXTENSION_NAME;
     }
 
     XrInstanceCreateInfoAndroidKHR androidInfo = { XR_TYPE_INSTANCE_CREATE_INFO_ANDROID_KHR };
@@ -1826,6 +1840,10 @@ static void handleSessionStateChange(XrCtx* ctx, XrSessionState newState) {
 // so a hand held near the threshold does not chatter.
 #define PINCH_ON_M  0.020f
 #define PINCH_OFF_M 0.032f
+// Same hysteresis idea, but for XR_FB_hand_tracking_aim's continuous
+// 0..1 pinchStrengthIndex instead of a raw joint gap - see jointPinching().
+#define PINCH_STRENGTH_ON  0.80f
+#define PINCH_STRENGTH_OFF 0.55f
 
 static void initJointTracking(XrCtx* ctx) {
     if (!ctx->handTracking) {
@@ -2496,6 +2514,13 @@ static int jointPinching(XrCtx* ctx, int hand, XrSpace space, const XrPosef* hea
     locations.jointCount = XR_HAND_JOINT_COUNT_EXT;
     locations.jointLocations = joints;
 
+    // Meta-specific: chained onto the same locate call, filled by the
+    // runtime alongside the joints themselves - no extra API call needed.
+    XrHandTrackingAimStateFB aimState = { XR_TYPE_HAND_TRACKING_AIM_STATE_FB };
+    if (ctx->handTrackingAim) {
+        locations.next = &aimState;
+    }
+
     XrHandJointsLocateInfoEXT locate = { XR_TYPE_HAND_JOINTS_LOCATE_INFO_EXT };
     locate.baseSpace = space;
     locate.time = ctx->predictedDisplayTime;
@@ -2507,7 +2532,16 @@ static int jointPinching(XrCtx* ctx, int hand, XrSpace space, const XrPosef* hea
         return 0;
     }
 
-    if (headValid) {
+    // Meta's own aim pose is steadier than buildHandRay()'s hand-rolled
+    // shoulder-ray, and doesn't need a valid head pose to construct -
+    // preferred whenever the runtime actually computed one this frame.
+    int haveAim = ctx->handTrackingAim
+            && (aimState.status & XR_HAND_TRACKING_AIM_VALID_BIT_FB) != 0;
+    if (haveAim) {
+        ctx->handRay[hand] = aimState.aimPose;
+        ctx->handRayValid[hand] = 1;
+    }
+    else if (headValid) {
         buildHandRay(ctx, hand, head, joints);
     }
 
@@ -2520,18 +2554,29 @@ static int jointPinching(XrCtx* ctx, int hand, XrSpace space, const XrPosef* hea
         return 0;
     }
 
-    float dx = thumb->pose.position.x - index->pose.position.x;
-    float dy = thumb->pose.position.y - index->pose.position.y;
-    float dz = thumb->pose.position.z - index->pose.position.z;
-    float gap = sqrtf(dx * dx + dy * dy + dz * dz);
-
-    // Where the pinch happened, which is what a drag follows
+    // Where the pinch happened, which is what a drag follows - always the
+    // real fingertip joints regardless of which pinch signal is used below,
+    // since the aim extension has no equivalent of its own.
     ctx->pinchPoint[hand].x = (thumb->pose.position.x + index->pose.position.x) * 0.5f;
     ctx->pinchPoint[hand].y = (thumb->pose.position.y + index->pose.position.y) * 0.5f;
     ctx->pinchPoint[hand].z = (thumb->pose.position.z + index->pose.position.z) * 0.5f;
     ctx->pinchPointValid[hand] = 1;
 
-    ctx->jointPinch[hand] = gap < (ctx->jointPinch[hand] ? PINCH_OFF_M : PINCH_ON_M);
+    // Meta's continuous per-finger pinch strength is preferred over the
+    // raw thumb/index gap distance whenever this frame's locate actually
+    // computed one - COMPUTED can be set without VALID (e.g. a hand at the
+    // edge of tracking), so this is checked independently of haveAim above.
+    if (ctx->handTrackingAim && (aimState.status & XR_HAND_TRACKING_AIM_COMPUTED_BIT_FB) != 0) {
+        float threshold = ctx->jointPinch[hand] ? PINCH_STRENGTH_OFF : PINCH_STRENGTH_ON;
+        ctx->jointPinch[hand] = aimState.pinchStrengthIndex >= threshold;
+    }
+    else {
+        float dx = thumb->pose.position.x - index->pose.position.x;
+        float dy = thumb->pose.position.y - index->pose.position.y;
+        float dz = thumb->pose.position.z - index->pose.position.z;
+        float gap = sqrtf(dx * dx + dy * dy + dz * dz);
+        ctx->jointPinch[hand] = gap < (ctx->jointPinch[hand] ? PINCH_OFF_M : PINCH_ON_M);
+    }
     return ctx->jointPinch[hand];
 }
 
