@@ -168,12 +168,13 @@ public class XrRenderer implements SurfaceTexture.OnFrameAvailableListener {
     // which screen(s) it floats above). One bitmap, one cell per item, built
     // once and uploaded whole.
     private final AtomicReference<ByteBuffer> pendingTopBarArt = new AtomicReference<>();
-    private static final int TOPBAR_ITEM_COUNT = 5;
+    // Keyboard icon pulled for now - see the matching comment in
+    // xr_renderer.c next to TOPBAR_ITEM_COUNT for why.
+    private static final int TOPBAR_ITEM_COUNT = 4;
     private static final int TOPBAR_EXIT_INDEX = 0;
     private static final int TOPBAR_BRIGHTNESS_INDEX = 1;
     private static final int TOPBAR_CURVE_INDEX = 2;
-    private static final int TOPBAR_KEYBOARD_INDEX = 3;
-    private static final int TOPBAR_DEPTH_INDEX = 4;
+    private static final int TOPBAR_DEPTH_INDEX = 3;
     // Live 3D-effect state - toggled from the top bar, started from
     // PreferenceConfiguration.VR_DEPTH_EFFECT_PREF_STRING. Read by
     // buildTopBarArt() to pick which of the two icon variants to draw.
@@ -632,7 +633,6 @@ public class XrRenderer implements SurfaceTexture.OnFrameAvailableListener {
         drawIcon(canvas, R.drawable.ic_topbar_exit, cellRect(TOPBAR_EXIT_INDEX));
         drawIcon(canvas, R.drawable.ic_topbar_brightness, cellRect(TOPBAR_BRIGHTNESS_INDEX));
         drawIcon(canvas, R.drawable.ic_topbar_curve, cellRect(TOPBAR_CURVE_INDEX));
-        drawIcon(canvas, R.drawable.ic_topbar_keyboard, cellRect(TOPBAR_KEYBOARD_INDEX));
         drawIcon(canvas, depthEffectOn ? R.drawable.ic_topbar_3d_on : R.drawable.ic_topbar_3d_off,
                 cellRect(TOPBAR_DEPTH_INDEX));
 

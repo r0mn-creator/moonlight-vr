@@ -159,9 +159,15 @@
 #define BAR_HEIGHT_FRAC (BAR_WIDTH_FRAC * (float)BAR_TEX_H / (float)BAR_TEX_W)
 #define BAR_GAP_FRAC    0.035f
 #define CORNER_FRAC     0.075f
+// How far outside the screen's own corner the bracket sits, same standoff
+// convention as BAR_GAP_FRAC - drawn dead-on the corner (no gap) put the
+// icon half on top of the picture instead of clearly outside it.
+#define CORNER_GAP_FRAC 0.035f
 // Hover zones are bigger than the art, since aiming at a thin bar is fussy
 #define HOVER_MARGIN 1.7f
-#define CORNER_HOVER 1.5f
+// Widened so the resize corners are easier to grab without also having to
+// reach exactly onto the screen's own edge
+#define CORNER_HOVER 2.2f
 // The bar is small on purpose, so its hover zone is proportionally wider
 #define BAR_HOVER 2.0f
 
@@ -261,14 +267,30 @@
 // topBarItemPose(index, count). Only the count and what each slot draws/does
 // needs to change to add one.
 #define PRODUCTIVITY_BAR_Y_OFFSET_M 0.50f
-#define TOPBAR_ITEM_SIZE_M 0.10f
+// Doubled from the original 0.10/0.045/0.28 - too small to grab reliably
+#define TOPBAR_ITEM_SIZE_M 0.20f
 #define TOPBAR_ITEM_GAP_M 0.03f
-#define TOPBAR_ITEM_COUNT 5
+// Keyboard icon pulled for now (2026-09-17) - it correctly drives
+// InputMethodManager.toggleSoftInput() end to end, confirmed via logcat all
+// the way into Horizon OS's own KeyboardInputMethodService, but the OS's
+// own keyboard-tracking subsystem fails to bring the panel up while
+// hand-tracking is the active input mode (its own log: "FIXME: failed to
+// enable keyboard tracking"). Platform-side gap, not an app bug - revisit
+// if a future Horizon OS build fixes it. Re-adding is just restoring
+// TOPBAR_ITEM_COUNT to 5, giving keyboard an index again, and putting its
+// draw call and hit-test block back (see git history for this commit).
+#define TOPBAR_ITEM_COUNT 4
 #define TOPBAR_EXIT_INDEX 0
 #define TOPBAR_BRIGHTNESS_INDEX 1
 #define TOPBAR_CURVE_INDEX 2
-#define TOPBAR_KEYBOARD_INDEX 3
-#define TOPBAR_DEPTH_INDEX 4
+// Screen radius range the curve slider maps to, both ends as a multiple of
+// viewing distance - shared by updatePlacement()'s seed and
+// applySliderValue()'s live update so they can't drift apart. Lowered the
+// tight end from 1.0 (screen curling right up to the eye) to 0.6 for a
+// noticeably tighter max wrap.
+#define CURVE_RADIUS_MAX_MULT 4.0f
+#define CURVE_RADIUS_MIN_MULT 0.6f
+#define TOPBAR_DEPTH_INDEX 3
 // ctx->openSlider when no slider is open - not a real item index
 #define TOPBAR_NO_SLIDER (-1)
 #define TOPBAR_WIDTH_M (TOPBAR_ITEM_COUNT * TOPBAR_ITEM_SIZE_M \
@@ -291,23 +313,52 @@
 // Shared slider chrome - one track/thumb, repositioned above whichever
 // item opened it (ctx->openSlider). Brightness: right = full passthrough
 // (default), left = full black. Curve: right = ~180 degree wrap, left = flat.
-#define SLIDER_TRACK_WIDTH_M 0.28f
-#define SLIDER_TRACK_HEIGHT_M 0.03f
-#define SLIDER_THUMB_SIZE_M 0.045f
+#define SLIDER_TRACK_WIDTH_M 0.56f
+// Thinner than a plain doubling of the old 0.03 would give - the track
+// itself should read as a slim line even though the grabbable thumb is
+// much bigger now
+#define SLIDER_TRACK_HEIGHT_M 0.022f
+#define SLIDER_THUMB_SIZE_M 0.09f
 #define SLIDER_GAP_M 0.03f
 #define SLIDER_TRACK_TEX_W 256
 #define SLIDER_TRACK_TEX_H 32
-#define SLIDER_THUMB_TEX 48
+#define SLIDER_THUMB_TEX 64
 // One dot per side, alpha-only (RGB unused) - the whole visible passthrough
 // is dimmed by compositing a black sphere behind everything, so the texture
 // itself never needs more than one colour.
 #define DIM_TEX 4
 
+// Whole-view fade to/from black: session start and the couple of seconds
+// before exit. Independent of the dim sphere above - that one only ever
+// covers the room, and this one has to cover the screen too, so it is its
+// own sphere submitted dead last (see nativeEndFrame), on top of literally
+// everything else the frame draws.
+#define FADE_NONE 0
+#define FADE_IN   1
+#define FADE_OUT  2
+// Was 2s - felt a bit long, especially on the way out
+#define FADE_DURATION_NS 1000000000L
+
 // Glow on/off, next to the brightness slider specifically (not curve's) -
 // appears and disappears with it, since it only means anything while the
 // room-darkening slider is open.
-#define GLOW_TOGGLE_SIZE_M 0.06f
+// Doubled to match TOPBAR_ITEM_SIZE_M's own 0.10->0.20 - this one was
+// missed in that pass and stayed noticeably smaller than its neighbours.
+#define GLOW_TOGGLE_SIZE_M 0.12f
 #define GLOW_TOGGLE_GAP_M 0.025f
+
+// The glow itself: a small quad hugging the screen's own edges rather than
+// a tint on the full-surround dim sphere (that one stays flat black - see
+// the dim layer below). Short throw on purpose - just the last little bit
+// of the picture bleeding out before it fades, not a room-filling wash.
+// Gaming mode only for now, same as the rest of the top bar's newer
+// modules; Productivity's screens don't get a halo yet.
+// Higher res than the plain dim/fade spheres - this one needs a genuinely
+// smooth radial gradient, not just a flat alpha, so a coarse texture would
+// read as a hard-edged block instead of a fade.
+#define GLOW_HALO_TEX 128
+// Shrunk from an initial 0.18 - still too big/overpowering at that size.
+#define GLOW_MARGIN_FRAC 0.10f
 
 typedef struct { float x, y, z; } Vec3;
 
@@ -399,6 +450,13 @@ typedef struct {
     uint32_t glowToggleImageCount;
     XrSwapchainImageOpenGLESKHR* glowToggleImages;
     int glowToggleReady;
+    // The halo itself - alpha shape recomputed each frame alongside the
+    // colour (GLOW_HALO_TEX is small enough that this costs nothing), see
+    // updateGlowHalo().
+    XrSwapchain glowHaloSwapchain;
+    uint32_t glowHaloImageCount;
+    XrSwapchainImageOpenGLESKHR* glowHaloImages;
+    int glowHaloReady;
 
     // Temporal smoothing. The normalization range is smoothed separately from
     // the map itself: a single outlier pixel moving the min or max used to
@@ -523,6 +581,11 @@ typedef struct {
     PFN_xrCreateHandTrackerEXT pfnCreateHandTracker;
     PFN_xrDestroyHandTrackerEXT pfnDestroyHandTracker;
     PFN_xrLocateHandJointsEXT pfnLocateHandJoints;
+    // Asks the runtime to keep CPU/GPU clocks up for the whole session
+    // instead of whatever it would otherwise pick for an app it doesn't
+    // recognise as latency sensitive - see handleSessionStateChange().
+    int perfSettingsSupported;
+    PFN_xrPerfSettingsSetPerformanceLevelEXT pfnSetPerfLevel;
     int usingHands[SRC_COUNT];
     // A pinch that woke the pointer is not also a click, so it is swallowed
     // until the hand opens again
@@ -686,6 +749,26 @@ typedef struct {
     int dimReady;
     float dimUploadedLevel;
     int dimUploadedValid;
+
+    // Whole-view fade sphere - same recipe as the dim layer above (tiny
+    // solid-black alpha-only equirect), but its own independent swapchain
+    // and alpha, since it has to sit in front of the screen too. See
+    // FADE_NONE/FADE_IN/FADE_OUT.
+    XrSwapchain fadeSwapchain;
+    uint32_t fadeImageCount;
+    XrSwapchainImageOpenGLESKHR* fadeImages;
+    int fadeReady;
+    float fadeUploadedAlpha;
+    int fadeUploadedValid;
+    int fadeState;
+    float fadeAlpha;       // 0 = clear, 1 = opaque black
+    float fadeFromAlpha;   // ctx->fadeAlpha captured when the current phase started
+    long fadeStartNs;
+    // Set once a FADE_OUT run reaches full black; consumed (and cleared) by
+    // nativeUpdateInput on the next frame, which is what actually raises
+    // IN_EXIT_PRESSED - deferred this way so Java's finish() never lands on
+    // a frame the user could still see, only on one that's already black.
+    int fadeOutComplete;
 
     long statFrames;
     long statTotalNs;
@@ -1079,6 +1162,7 @@ static int initXrInstance(XrCtx* ctx) {
         if (!strcmp(exts[i].extensionName, XR_MSFT_HAND_INTERACTION_EXTENSION_NAME)) ctx->msftHandInteraction = 1;
         if (!strcmp(exts[i].extensionName, XR_EXT_HAND_TRACKING_EXTENSION_NAME)) ctx->handTracking = 1;
         if (!strcmp(exts[i].extensionName, XR_EXT_EYE_GAZE_INTERACTION_EXTENSION_NAME)) ctx->eyeGaze = 1;
+        if (!strcmp(exts[i].extensionName, XR_EXT_PERFORMANCE_SETTINGS_EXTENSION_NAME)) ctx->perfSettingsSupported = 1;
     }
     free(exts);
 
@@ -1087,7 +1171,7 @@ static int initXrInstance(XrCtx* ctx) {
         return 0;
     }
 
-    const char* enabledExts[9];
+    const char* enabledExts[10];
     uint32_t enabledCount = 0;
     enabledExts[enabledCount++] = XR_KHR_OPENGL_ES_ENABLE_EXTENSION_NAME;
     enabledExts[enabledCount++] = XR_KHR_ANDROID_CREATE_INSTANCE_EXTENSION_NAME;
@@ -1114,6 +1198,9 @@ static int initXrInstance(XrCtx* ctx) {
     if (ctx->msftHandInteraction) {
         enabledExts[enabledCount++] = XR_MSFT_HAND_INTERACTION_EXTENSION_NAME;
     }
+    if (ctx->perfSettingsSupported) {
+        enabledExts[enabledCount++] = XR_EXT_PERFORMANCE_SETTINGS_EXTENSION_NAME;
+    }
 
     XrInstanceCreateInfoAndroidKHR androidInfo = { XR_TYPE_INSTANCE_CREATE_INFO_ANDROID_KHR };
     androidInfo.applicationVM = ctx->vm;
@@ -1130,6 +1217,14 @@ static int initXrInstance(XrCtx* ctx) {
 
     if (!checkXr(xrCreateInstance(&createInfo, &ctx->instance), "xrCreateInstance")) {
         return 0;
+    }
+
+    if (ctx->perfSettingsSupported) {
+        if (XR_FAILED(xrGetInstanceProcAddr(ctx->instance, "xrPerfSettingsSetPerformanceLevelEXT",
+                                            (PFN_xrVoidFunction*)&ctx->pfnSetPerfLevel))) {
+            ctx->pfnSetPerfLevel = NULL;
+            ctx->perfSettingsSupported = 0;
+        }
     }
 
     XrSystemGetInfo systemInfo = { XR_TYPE_SYSTEM_GET_INFO };
@@ -1670,6 +1765,24 @@ static void handleSessionStateChange(XrCtx* ctx, XrSessionState newState) {
             beginInfo.primaryViewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
             if (checkXr(xrBeginSession(ctx->session, &beginInfo), "xrBeginSession")) {
                 ctx->sessionRunning = 1;
+                // Start fully black and ease in, rather than snapping straight
+                // to the room/screen the instant the compositor takes over.
+                ctx->fadeState = FADE_IN;
+                ctx->fadeFromAlpha = 1.0f;
+                ctx->fadeAlpha = 1.0f;
+                ctx->fadeStartNs = nowNs();
+                // Immersive VR sessions already get scheduling priority from
+                // the com.oculus.intent.category.VR intent filter, but this
+                // asks explicitly rather than hoping the runtime's default
+                // pick is generous - sustained (not boost, which the spec
+                // frames as a short burst allowance) since a stream runs for
+                // the whole session, not a one-off load.
+                if (ctx->perfSettingsSupported && ctx->pfnSetPerfLevel != NULL) {
+                    ctx->pfnSetPerfLevel(ctx->session, XR_PERF_SETTINGS_DOMAIN_CPU_EXT,
+                                         XR_PERF_SETTINGS_LEVEL_SUSTAINED_HIGH_EXT);
+                    ctx->pfnSetPerfLevel(ctx->session, XR_PERF_SETTINGS_DOMAIN_GPU_EXT,
+                                         XR_PERF_SETTINGS_LEVEL_SUSTAINED_HIGH_EXT);
+                }
             }
             break;
         }
@@ -2584,6 +2697,25 @@ static int createPointerSwapchain(XrCtx* ctx) {
         ctx->glowToggleSwapchain = XR_NULL_HANDLE;
     }
 
+    // The glow halo itself
+    info.width = GLOW_HALO_TEX;
+    info.height = GLOW_HALO_TEX;
+    if (checkXr(xrCreateSwapchain(ctx->session, &info, &ctx->glowHaloSwapchain),
+                "create glow halo swapchain")) {
+        xrEnumerateSwapchainImages(ctx->glowHaloSwapchain, 0, &ctx->glowHaloImageCount, NULL);
+        ctx->glowHaloImages = calloc(ctx->glowHaloImageCount,
+                                     sizeof(XrSwapchainImageOpenGLESKHR));
+        for (uint32_t i = 0; i < ctx->glowHaloImageCount; i++) {
+            ctx->glowHaloImages[i].type = XR_TYPE_SWAPCHAIN_IMAGE_OPENGL_ES_KHR;
+        }
+        xrEnumerateSwapchainImages(ctx->glowHaloSwapchain, ctx->glowHaloImageCount,
+                                   &ctx->glowHaloImageCount,
+                                   (XrSwapchainImageBaseHeader*)ctx->glowHaloImages);
+    }
+    else {
+        ctx->glowHaloSwapchain = XR_NULL_HANDLE;
+    }
+
     // Tiny - alpha is the only thing about this texture that ever matters
     info.width = DIM_TEX;
     info.height = DIM_TEX;
@@ -2599,6 +2731,21 @@ static int createPointerSwapchain(XrCtx* ctx) {
     }
     else {
         ctx->dimSwapchain = XR_NULL_HANDLE;
+    }
+
+    // Same tiny alpha-only recipe as the dim swapchain above
+    if (checkXr(xrCreateSwapchain(ctx->session, &info, &ctx->fadeSwapchain),
+                "create fade swapchain")) {
+        xrEnumerateSwapchainImages(ctx->fadeSwapchain, 0, &ctx->fadeImageCount, NULL);
+        ctx->fadeImages = calloc(ctx->fadeImageCount, sizeof(XrSwapchainImageOpenGLESKHR));
+        for (uint32_t i = 0; i < ctx->fadeImageCount; i++) {
+            ctx->fadeImages[i].type = XR_TYPE_SWAPCHAIN_IMAGE_OPENGL_ES_KHR;
+        }
+        xrEnumerateSwapchainImages(ctx->fadeSwapchain, ctx->fadeImageCount, &ctx->fadeImageCount,
+                                   (XrSwapchainImageBaseHeader*)ctx->fadeImages);
+    }
+    else {
+        ctx->fadeSwapchain = XR_NULL_HANDLE;
     }
 
     info.width = CORNER_TEX_W;
@@ -2769,7 +2916,14 @@ static void buildSliderArt(XrCtx* ctx) {
             float d = sqrtf(dx * dx + dy * dy);
             unsigned char* p = thumb + ((y * SLIDER_THUMB_TEX) + x) * 4;
             unsigned char a = (unsigned char)(edgeAlpha(d, thumbR - 1.5f) * 255.0f);
-            p[0] = p[1] = p[2] = 255;
+            // Premultiplied, like the track above - XR_COMPOSITION_LAYER_
+            // BLEND_TEXTURE_SOURCE_ALPHA_BIT's blend equation is Color_dst =
+            // Color_src + Color_dst*(1-Alpha_src), which assumes Color_src
+            // already carries its own alpha. A flat 255 here (not scaled by
+            // a) still adds full white outside the circle even at alpha 0,
+            // which is exactly why this rendered as a hard square instead
+            // of fading to nothing.
+            p[0] = p[1] = p[2] = a;
             p[3] = a;
         }
     }
@@ -2871,12 +3025,14 @@ static void updatePlacement(XrCtx* ctx, float distance, float quadWidth) {
         ctx->screenPose.orientation.w = 1.0f;
         ctx->screenPose.position.z = -distance;
         ctx->screenWidth = quadWidth;
-        // Radius runs from 4x distance (slightly curved) down to the distance
-        // itself (wrapped around the viewer) as curveAmount rises. Only the
-        // seed here - live changes from the top bar's curve slider go
-        // straight to ctx->screenRadius instead (see applySliderValue()),
-        // since this whole branch also resets screen position/pose.
-        ctx->screenRadius = distance * (1.0f + 3.0f * (1.0f - ctx->curveAmount));
+        // Radius runs from CURVE_RADIUS_MAX_MULT x distance (slightly
+        // curved) down to CURVE_RADIUS_MIN_MULT x distance (a tight wrap)
+        // as curveAmount rises. Only the seed here - live changes from the
+        // top bar's curve slider go straight to ctx->screenRadius instead
+        // (see applySliderValue()), since this whole branch also resets
+        // screen position/pose.
+        ctx->screenRadius = distance * (CURVE_RADIUS_MIN_MULT
+                + (CURVE_RADIUS_MAX_MULT - CURVE_RADIUS_MIN_MULT) * (1.0f - ctx->curveAmount));
         ctx->placementValid = 1;
         ctx->grabMode = GRAB_NONE;
         ctx->poseDirty = 1;
@@ -3227,10 +3383,18 @@ static void destroyCtx(JNIEnv* env, XrCtx* ctx) {
         xrDestroySwapchain(ctx->glowToggleSwapchain);
     }
     free(ctx->glowToggleImages);
+    if (ctx->glowHaloSwapchain != XR_NULL_HANDLE) {
+        xrDestroySwapchain(ctx->glowHaloSwapchain);
+    }
+    free(ctx->glowHaloImages);
     if (ctx->dimSwapchain != XR_NULL_HANDLE) {
         xrDestroySwapchain(ctx->dimSwapchain);
     }
     free(ctx->dimImages);
+    if (ctx->fadeSwapchain != XR_NULL_HANDLE) {
+        xrDestroySwapchain(ctx->fadeSwapchain);
+    }
+    free(ctx->fadeImages);
     if (ctx->localSpace != XR_NULL_HANDLE) {
         xrDestroySpace(ctx->localSpace);
     }
@@ -3781,7 +3945,8 @@ static void applySliderValue(XrCtx* ctx, int item, float value) {
         // Independent of updatePlacement()'s own seed, on purpose - that
         // path also resets screen position, which a curve adjustment must
         // not do. See the field comment on ctx->curveAmount.
-        ctx->screenRadius = ctx->lastDistance * (1.0f + 3.0f * (1.0f - value));
+        ctx->screenRadius = ctx->lastDistance * (CURVE_RADIUS_MIN_MULT
+                + (CURVE_RADIUS_MAX_MULT - CURVE_RADIUS_MIN_MULT) * (1.0f - value));
     }
 }
 
@@ -3818,18 +3983,14 @@ static int updateTopBar(XrCtx* ctx, XrPosef* aims, const int* valid, float* out)
         if (screenProject(aims[h], topBarItemPose(ctx, TOPBAR_EXIT_INDEX, TOPBAR_ITEM_COUNT),
                           TOPBAR_ITEM_SIZE_M, TOPBAR_ITEM_SIZE_M, 0.0f, 0, &u, &v)
                 && u >= 0.0f && u <= 1.0f && v >= 0.0f && v <= 1.0f) {
-            if (ctx->triggerEdge[h]) {
-                out[IN_EXIT_PRESSED] = 1.0f;
-                fireHaptic(ctx, h);
-            }
-            return 1;
-        }
-
-        if (screenProject(aims[h], topBarItemPose(ctx, TOPBAR_KEYBOARD_INDEX, TOPBAR_ITEM_COUNT),
-                          TOPBAR_ITEM_SIZE_M, TOPBAR_ITEM_SIZE_M, 0.0f, 0, &u, &v)
-                && u >= 0.0f && u <= 1.0f && v >= 0.0f && v <= 1.0f) {
-            if (ctx->triggerEdge[h]) {
-                out[IN_KEYBOARD_TOGGLE] = 1.0f;
+            // Don't raise IN_EXIT_PRESSED yet - fade to black first (see
+            // FADE_OUT in nativeEndFrame/nativeUpdateInput) so Java's
+            // finish() never lands on a frame the user can still see.
+            // Guarded so a second tap mid-fade can't reset the clock.
+            if (ctx->triggerEdge[h] && ctx->fadeState != FADE_OUT) {
+                ctx->fadeState = FADE_OUT;
+                ctx->fadeFromAlpha = ctx->fadeAlpha;
+                ctx->fadeStartNs = nowNs();
                 fireHaptic(ctx, h);
             }
             return 1;
@@ -3994,6 +4155,17 @@ Java_com_limelight_binding_video_XrRenderer_nativeUpdateInput(JNIEnv* env, jobje
     memset(out, 0, sizeof(out));
     if (ctx != NULL) {
         ctx->gazeEnabled = gazeEnabled;
+    }
+    // The fade-to-black before exit finished rendering last frame - only now
+    // is it safe to actually tell Java to finish(), since this is the first
+    // frame Java will act on that the user can no longer see anything of.
+    // Checked ahead of both modes' own input handling and any early-return
+    // below, since exit must go through regardless of focus/placement state.
+    if (ctx != NULL && ctx->fadeOutComplete) {
+        ctx->fadeOutComplete = 0;
+        out[IN_EXIT_PRESSED] = 1.0f;
+        (*env)->SetFloatArrayRegion(env, outArr, 0, IN_SLOTS, out);
+        return;
     }
     // Neutral balance/gain by default - Gaming mode never reaches the code
     // that would change these, so its audio is always exactly this, i.e.
@@ -4256,8 +4428,17 @@ Java_com_limelight_binding_video_XrRenderer_nativeUpdateInput(JNIEnv* env, jobje
     // have been meant as a click
     int offPicture = hand >= 0 && (hitU[hand] < 0.0f || hitU[hand] > 1.0f
                                    || hitV[hand] < 0.0f || hitV[hand] > 1.0f);
-    applyGrab(ctx, aimPoses, aimValid, hand, hover, ctx->hoverCorner, offPicture,
-              height, curved);
+    // GRAB_SLIDER's whole lifecycle is self-contained inside updateTopBar()
+    // above - applyGrab() doesn't know about it, and its own "is this grab
+    // still held" check at the top (via grabByTrigger/grabDown, never set
+    // for a slider grab) would read stale state and reset grabMode back to
+    // NONE, then immediately hand it to GRAB_RESIZE if the same ray also
+    // falls in the screen's corner zone. That's exactly what made dragging
+    // a slider also snap the resize handle.
+    if (ctx->grabMode != GRAB_SLIDER) {
+        applyGrab(ctx, aimPoses, aimValid, hand, hover, ctx->hoverCorner, offPicture,
+                  height, curved);
+    }
     screenPose = ctx->screenPose;
     height = ctx->screenWidth * (float)ctx->videoHeight / (float)ctx->videoWidth;
     radius = ctx->screenRadius;
@@ -4652,6 +4833,61 @@ static void computeGlowColor(XrCtx* ctx, const float* texMatrix) {
     ctx->glowR = (float)sumR / (count * 255.0f);
     ctx->glowG = (float)sumG / (count * 255.0f);
     ctx->glowB = (float)sumB / (count * 255.0f);
+}
+
+// The halo's shape is a soft ring hugging the screen's own rectangle,
+// transparent inside it (the screen quad draws on top there regardless,
+// since composition layers are painter's-algorithm order, not depth
+// tested) and fading to nothing within GLOW_MARGIN_FRAC of the screen's
+// size - "the last few pixels bleeding out and fading over a short
+// distance", not a wash over the whole surround. Recomputed whole (shape
+// and colour together) every frame while visible; GLOW_HALO_TEX is small
+// enough that this is free.
+static void updateGlowHalo(XrCtx* ctx) {
+    if (ctx->glowHaloSwapchain == XR_NULL_HANDLE) {
+        return;
+    }
+
+    const int n = GLOW_HALO_TEX;
+    unsigned char r = (unsigned char)(ctx->glowR * 255.0f + 0.5f);
+    unsigned char g = (unsigned char)(ctx->glowG * 255.0f + 0.5f);
+    unsigned char b = (unsigned char)(ctx->glowB * 255.0f + 0.5f);
+    // Fraction of the quad, on each side, that the screen's own footprint
+    // occupies - the quad itself is sized WIDTH*(1+2*margin), so the screen
+    // sits centred in the middle 1/(1+2*margin) of it.
+    float inner = 0.5f - 0.5f / (1.0f + 2.0f * GLOW_MARGIN_FRAC);
+
+    unsigned char px[GLOW_HALO_TEX * GLOW_HALO_TEX * 4];
+    for (int y = 0; y < n; y++) {
+        for (int x = 0; x < n; x++) {
+            float nx = (x + 0.5f) / (float)n;
+            float ny = (y + 0.5f) / (float)n;
+            float dx = fabsf(nx - 0.5f) - (0.5f - inner);
+            float dy = fabsf(ny - 0.5f) - (0.5f - inner);
+            if (dx < 0.0f) dx = 0.0f;
+            if (dy < 0.0f) dy = 0.0f;
+            float d = sqrtf(dx * dx + dy * dy);
+            float a = 1.0f - d / inner;
+            if (a < 0.0f) a = 0.0f;
+            if (a > 1.0f) a = 1.0f;
+            // Smoothstep instead of a straight ramp - a linear fade over
+            // only a handful of texels still reads as a hard edge, this
+            // eases both ends of it so it genuinely looks like light
+            // dissipating rather than a translucent rectangle with a cutoff.
+            a = a * a * (3.0f - 2.0f * a);
+            unsigned char* p = px + ((y * n) + x) * 4;
+            // Premultiplied - same fix as the slider thumb below. A fixed
+            // (r,g,b) regardless of a still adds full-strength colour even
+            // past the point alpha reaches 0, which is exactly what made
+            // this look like a sharp-edged patch instead of a fade: the
+            // layer boundary, not the alpha ramp, was the only real cutoff.
+            p[0] = (unsigned char)(r * a + 0.5f);
+            p[1] = (unsigned char)(g * a + 0.5f);
+            p[2] = (unsigned char)(b * a + 0.5f);
+            p[3] = (unsigned char)(a * 255.0f + 0.5f);
+        }
+    }
+    ctx->glowHaloReady = uploadArt(ctx, ctx->glowHaloSwapchain, ctx->glowHaloImages, px, n, n);
 }
 
 static void renderVideoFrame(XrCtx* ctx, const float* texMatrix, float separation) {
@@ -5111,6 +5347,24 @@ Java_com_limelight_binding_video_XrRenderer_nativeEndFrame(JNIEnv* env, jobject 
         quadWidth = ctx->screenOverride;
     }
 
+    // Advance the whole-view fade on wall clock time, independent of frame
+    // gating below, so a couple of skipped frames don't stretch it out
+    // noticeably. See FADE_IN/FADE_OUT.
+    if (ctx->fadeState != FADE_NONE) {
+        float target = ctx->fadeState == FADE_IN ? 0.0f : 1.0f;
+        float t = (float)(nowNs() - ctx->fadeStartNs) / (float)FADE_DURATION_NS;
+        if (t < 0.0f) t = 0.0f;
+        if (t > 1.0f) t = 1.0f;
+        ctx->fadeAlpha = ctx->fadeFromAlpha + (target - ctx->fadeFromAlpha) * t;
+        if (t >= 1.0f) {
+            ctx->fadeAlpha = target;
+            if (ctx->fadeState == FADE_OUT) {
+                ctx->fadeOutComplete = 1;
+            }
+            ctx->fadeState = FADE_NONE;
+        }
+    }
+
     if (newFrame && ctx->shouldRender) {
         long startNs = nowNs();
 
@@ -5124,6 +5378,9 @@ Java_com_limelight_binding_video_XrRenderer_nativeEndFrame(JNIEnv* env, jobject 
 
         if (ctx->passthroughLevel < 0.999f && ctx->glowEnabled) {
             computeGlowColor(ctx, texMatrix);
+            if (!ctx->productivityMode) {
+                updateGlowHalo(ctx);
+            }
         }
 
         long elapsed = nowNs() - startNs;
@@ -5183,37 +5440,50 @@ Java_com_limelight_binding_video_XrRenderer_nativeEndFrame(JNIEnv* env, jobject 
     XrCompositionLayerQuad sliderThumbLayer;
     XrCompositionLayerQuad glowToggleLayer;
     XrCompositionLayerEquirect2KHR dimLayer;
+    XrCompositionLayerQuad glowHaloLayer;
+    XrCompositionLayerEquirect2KHR fadeLayer;
+    XrCompositionLayerCylinderKHR glowHaloCyl;
     const XrCompositionLayerBaseHeader* layers[16];
     uint32_t layerCount = 0;
 
     // ctx->passthrough drives the blend mode above; the dim layer below is a
     // separate, independent full-surround occlusion the brightness slider
-    // controls, layered behind everything else. Ambient glow v1: tinted by
-    // the current frame's average colour (computeGlowColor()) instead of
-    // flat black, so a dark room picks up light coloured like the screen -
-    // re-uploaded every frame while actually visible, since video content
-    // changes every frame; at the default full-passthrough level this whole
-    // block is skipped, same as before.
+    // controls, layered behind everything else - flat black, on purpose:
+    // the room should reach genuinely pitch black at max, independent of
+    // whatever colour the glow layer (see below) is doing near the screen.
     if (ctx->equirectSupported
             && (!ctx->dimUploadedValid
-                || fabsf(ctx->dimUploadedLevel - ctx->passthroughLevel) > 0.001f
-                || ctx->passthroughLevel < 0.999f)) {
+                || fabsf(ctx->dimUploadedLevel - ctx->passthroughLevel) > 0.001f)) {
         unsigned char px[DIM_TEX * DIM_TEX * 4];
         unsigned char alpha = (unsigned char)((1.0f - ctx->passthroughLevel) * 255.0f + 0.5f);
-        // Falls back to flat black immediately when the user turns glow
-        // off, rather than freezing on whatever colour was last computed
-        unsigned char r = ctx->glowEnabled ? (unsigned char)(ctx->glowR * 255.0f + 0.5f) : 0;
-        unsigned char g = ctx->glowEnabled ? (unsigned char)(ctx->glowG * 255.0f + 0.5f) : 0;
-        unsigned char b = ctx->glowEnabled ? (unsigned char)(ctx->glowB * 255.0f + 0.5f) : 0;
         for (int i = 0; i < DIM_TEX * DIM_TEX; i++) {
-            px[i * 4 + 0] = r;
-            px[i * 4 + 1] = g;
-            px[i * 4 + 2] = b;
+            px[i * 4 + 0] = 0;
+            px[i * 4 + 1] = 0;
+            px[i * 4 + 2] = 0;
             px[i * 4 + 3] = alpha;
         }
         ctx->dimReady = uploadArt(ctx, ctx->dimSwapchain, ctx->dimImages, px, DIM_TEX, DIM_TEX);
         ctx->dimUploadedLevel = ctx->passthroughLevel;
         ctx->dimUploadedValid = 1;
+    }
+
+    // Same tiny alpha-only texture as the dim sphere, driven by ctx->fadeAlpha
+    // instead of the passthrough slider - see the FADE_IN/FADE_OUT advance
+    // above.
+    if (ctx->equirectSupported
+            && (!ctx->fadeUploadedValid
+                || fabsf(ctx->fadeUploadedAlpha - ctx->fadeAlpha) > 0.001f)) {
+        unsigned char px[DIM_TEX * DIM_TEX * 4];
+        unsigned char alpha = (unsigned char)(ctx->fadeAlpha * 255.0f + 0.5f);
+        for (int i = 0; i < DIM_TEX * DIM_TEX; i++) {
+            px[i * 4 + 0] = 0;
+            px[i * 4 + 1] = 0;
+            px[i * 4 + 2] = 0;
+            px[i * 4 + 3] = alpha;
+        }
+        ctx->fadeReady = uploadArt(ctx, ctx->fadeSwapchain, ctx->fadeImages, px, DIM_TEX, DIM_TEX);
+        ctx->fadeUploadedAlpha = ctx->fadeAlpha;
+        ctx->fadeUploadedValid = 1;
     }
 
     if (ctx->everRendered && ctx->shouldRender) {
@@ -5236,6 +5506,65 @@ Java_com_limelight_binding_video_XrRenderer_nativeEndFrame(JNIEnv* env, jobject 
         dimLayer.lowerVerticalAngle = -1.5707963f;
         layers[layerCount++] = (const XrCompositionLayerBaseHeader*)&dimLayer;
       }
+
+      // Glow halo: submitted before the screen itself so the screen draws
+      // over it within its own footprint, and after the dim sphere so it
+      // sits in front of that. Follows the screen's own curve/flat choice -
+      // a flat quad's straight silhouette doesn't match a curved cylinder
+      // screen's footprint, which left mismatched bright patches showing
+      // past the screen's real edge instead of a clean short bleed. Gaming
+      // only (see updateGlowHalo()).
+      if (!ctx->productivityMode && ctx->glowHaloReady && ctx->glowEnabled
+              && ctx->passthroughLevel < 0.999f) {
+        float haloWidth = screenWidth * (1.0f + 2.0f * GLOW_MARGIN_FRAC);
+        float haloHeight = screenHeight * (1.0f + 2.0f * GLOW_MARGIN_FRAC);
+        if (ctx->curveAmount > 0.01f && ctx->cylinderSupported) {
+            // Same axis/radius math as the screen's own cylinder above -
+            // scaling both dimensions of the halo by the same margin factor
+            // leaves the aspect ratio, and so the cylinder's aspectRatio
+            // field, identical to the screen's.
+            float radius = ctx->screenRadius;
+            memset(&glowHaloCyl, 0, sizeof(glowHaloCyl));
+            glowHaloCyl.type = XR_TYPE_COMPOSITION_LAYER_CYLINDER_KHR;
+            glowHaloCyl.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
+            glowHaloCyl.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
+            glowHaloCyl.space = space;
+            glowHaloCyl.subImage.swapchain = ctx->glowHaloSwapchain;
+            glowHaloCyl.subImage.imageRect.offset.x = 0;
+            glowHaloCyl.subImage.imageRect.offset.y = 0;
+            glowHaloCyl.subImage.imageRect.extent.width = GLOW_HALO_TEX;
+            glowHaloCyl.subImage.imageRect.extent.height = GLOW_HALO_TEX;
+            glowHaloCyl.subImage.imageArrayIndex = 0;
+            glowHaloCyl.pose.orientation = screenPose.orientation;
+            Vec3 haloAxisLocal = { 0.0f, 0.0f, radius };
+            Vec3 haloAxis = quatRotate(screenPose.orientation, haloAxisLocal);
+            glowHaloCyl.pose.position.x = screenPose.position.x + haloAxis.x;
+            glowHaloCyl.pose.position.y = screenPose.position.y + haloAxis.y;
+            glowHaloCyl.pose.position.z = screenPose.position.z + haloAxis.z;
+            glowHaloCyl.radius = radius;
+            glowHaloCyl.centralAngle = haloWidth / radius;
+            glowHaloCyl.aspectRatio = haloWidth / haloHeight;
+            layers[layerCount++] = (const XrCompositionLayerBaseHeader*)&glowHaloCyl;
+        }
+        else {
+            memset(&glowHaloLayer, 0, sizeof(glowHaloLayer));
+            glowHaloLayer.type = XR_TYPE_COMPOSITION_LAYER_QUAD;
+            glowHaloLayer.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
+            glowHaloLayer.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
+            glowHaloLayer.subImage.swapchain = ctx->glowHaloSwapchain;
+            glowHaloLayer.subImage.imageRect.offset.x = 0;
+            glowHaloLayer.subImage.imageRect.offset.y = 0;
+            glowHaloLayer.subImage.imageRect.extent.width = GLOW_HALO_TEX;
+            glowHaloLayer.subImage.imageRect.extent.height = GLOW_HALO_TEX;
+            glowHaloLayer.subImage.imageArrayIndex = 0;
+            glowHaloLayer.space = space;
+            glowHaloLayer.pose = screenPose;
+            glowHaloLayer.size.width = haloWidth;
+            glowHaloLayer.size.height = haloHeight;
+            layers[layerCount++] = (const XrCompositionLayerBaseHeader*)&glowHaloLayer;
+        }
+      }
+
       if (ctx->productivityMode) {
         // Phase 1: N flat mono screens, fixed default arrangement, no
         // interaction yet (no beam/handles/picker/background - those are
@@ -5374,8 +5703,9 @@ Java_com_limelight_binding_video_XrRenderer_nativeEndFrame(JNIEnv* env, jobject 
                 sizeW = sizeH = screenWidth * CORNER_FRAC;
                 int right = ctx->hoverCorner == 1 || ctx->hoverCorner == 3;
                 int bottom = ctx->hoverCorner >= 2;
-                local.x = (right ? 0.5f : -0.5f) * screenWidth;
-                local.y = (bottom ? -0.5f : 0.5f) * screenHeight;
+                float gap = screenWidth * CORNER_GAP_FRAC;
+                local.x = (right ? 0.5f : -0.5f) * screenWidth + (right ? gap : -gap);
+                local.y = (bottom ? -0.5f : 0.5f) * screenHeight + (bottom ? -gap : gap);
                 // The art is a top left bracket, so the other three are the
                 // same picture rolled about the screen normal
                 if (ctx->hoverCorner == 1) roll = -1.5707963f;
@@ -5582,6 +5912,29 @@ Java_com_limelight_binding_video_XrRenderer_nativeEndFrame(JNIEnv* env, jobject 
                 layers[layerCount++] = (const XrCompositionLayerBaseHeader*)&glowToggleLayer;
             }
         }
+      }
+
+      // Whole-view fade, submitted dead last so painter's-algorithm order
+      // puts it in front of literally everything above - the screen and top
+      // bar included, not just the room. See FADE_IN/FADE_OUT.
+      if (ctx->fadeReady && ctx->equirectSupported && ctx->fadeAlpha > 0.001f) {
+        memset(&fadeLayer, 0, sizeof(fadeLayer));
+        fadeLayer.type = XR_TYPE_COMPOSITION_LAYER_EQUIRECT2_KHR;
+        fadeLayer.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
+        fadeLayer.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
+        fadeLayer.space = space;
+        fadeLayer.subImage.swapchain = ctx->fadeSwapchain;
+        fadeLayer.subImage.imageRect.offset.x = 0;
+        fadeLayer.subImage.imageRect.offset.y = 0;
+        fadeLayer.subImage.imageRect.extent.width = DIM_TEX;
+        fadeLayer.subImage.imageRect.extent.height = DIM_TEX;
+        fadeLayer.subImage.imageArrayIndex = 0;
+        fadeLayer.pose.orientation.w = 1.0f;
+        fadeLayer.radius = 0.0f;
+        fadeLayer.centralHorizontalAngle = 6.2831853f;
+        fadeLayer.upperVerticalAngle = 1.5707963f;
+        fadeLayer.lowerVerticalAngle = -1.5707963f;
+        layers[layerCount++] = (const XrCompositionLayerBaseHeader*)&fadeLayer;
       }
     }
 

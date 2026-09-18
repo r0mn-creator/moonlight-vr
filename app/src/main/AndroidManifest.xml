@@ -83,6 +83,12 @@
         android:name="pvr.software.eyetracking"
         android:required="false"/>
     <uses-permission android:name="com.picovr.permission.EYE_TRACKING" />
+    <!-- Without this, Horizon OS silently refuses to composite the system
+         keyboard overlay during an active immersive session - the
+         InputMethodManager call still "succeeds" but nothing is ever drawn -->
+    <uses-feature
+        android:name="oculus.software.overlay_keyboard"
+        android:required="false"/>
 
     <application
         android:allowBackup="true"

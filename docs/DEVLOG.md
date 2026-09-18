@@ -297,16 +297,196 @@ that would take:
   raycast/reflection math against it) than "new render pass." Quest 3 gets
   a meaningfully better mesh than Quest 2/Pro if that ever matters.
 
+## On-device test pass: findings, then a round of fixes
+
+First real headset session against the new top bar. Findings (verbatim
+in spirit): 3D toggle worked; keyboard icon did nothing; the glow was "an
+overpowering white that fills the room" and needed a short throw instead;
+sliders/icons were too small to grab reliably, wanted a round thumb and a
+thinner track; curve wanted more curve at max; the darkness slider itself
+was fine on a second look ("I take it back... it's the glow that's too
+strong"); exit worked perfectly; the corner resize handles needed more
+room off the screen edge to grab. Two polish asks came out of the same
+session: a short fade instead of an instant flash on exit, and whether
+Quest gives this app the same scheduling priority a "real" VR game gets.
+
+**Sizing.** `CORNER_HOVER` 1.5->2.2, `TOPBAR_ITEM_SIZE_M` 0.10->0.20,
+`SLIDER_TRACK_WIDTH_M` 0.28->0.56, `SLIDER_THUMB_SIZE_M` 0.045->0.09.
+Track height went the other way, 0.03->0.022 - doubling everything
+uniformly would have made the track read as a fat bar instead of a slim
+line with a big grabbable thumb on it. Curve's tight end
+(`CURVE_RADIUS_MIN_MULT`) tightened from 1.0x to 0.6x viewing distance;
+both call sites (`updatePlacement()`'s seed and `applySliderValue()`'s
+live update) now read the same two named constants so they can't drift
+apart again.
+
+**Glow vs. darkness, actually separated.** The v1 design above tinted the
+same full-surround dim sphere the brightness slider drives - which is
+exactly why it read as "fills the room": a colour applied to something
+already covering the entire passthrough view has no way to stay short-
+throw. Reverted the dim sphere to flat black, always. The glow is now its
+own small quad (`updateGlowHalo()`, 64x64 alpha-only) hugging the screen's
+own rectangle with a soft `GLOW_MARGIN_FRAC` (0.18) falloff - transparent
+directly behind the screen (which draws over it regardless, composition
+layers are submission-order, not depth-tested) and fading to nothing a
+short distance past the screen's edge. Submitted between the dim sphere
+and the screen itself, Gaming mode only.
+
+**Keyboard - root cause found, one manifest line.** `toggleSoftInput()`
+was already correctly wired (confirmed via `Game.java`/`activity_game.xml`
+- a focusable, focused `StreamView` exists in the hierarchy either way).
+The actual cause: Horizon OS gates the system-keyboard-overlay compositor
+feature behind an opt-in `<uses-feature>` flag. Without it the OS silently
+refuses to composite the keyboard overlay during an active immersive
+session - the `InputMethodManager` call still "succeeds", nothing is ever
+drawn. Confirmed via Unity/Unreal's identical error message
+("Oculus overlay keyboard is disabled, add
+'oculus.software.overlay_keyboard' feature request..."), and it's a
+manifest flag rather than an engine API, so it applies the same way to
+this native OpenXR app. Fix: added
+`<uses-feature android:name="oculus.software.overlay_keyboard"
+android:required="false"/>` to `AndroidManifest.xml`. (Separately, Meta
+also has a much heavier `XR_META_VIRTUAL_KEYBOARD_EXTENSION_NAME` API for
+rendering their own 3D floating keyboard model in-scene - not needed here,
+that's a different feature from showing the plain system IME overlay.)
+
+**Fade in/out, ~2s.** New independent whole-view fade sphere
+(`fadeSwapchain`/`ctx->fadeAlpha`/`FADE_IN`/`FADE_OUT`), same tiny
+alpha-only equirect recipe as the dim sphere but submitted dead last in
+the layer array so painter's-algorithm order puts it in front of
+literally everything - the screen included, not just the room (the dim
+sphere alone can't do this: it's submitted first/backmost, so the screen
+always draws over it). Session start (`XR_SESSION_STATE_READY`, right
+after `xrBeginSession` succeeds) seeds it fully black and eases to clear
+over `FADE_DURATION_NS` (2s). Pressing the Exit icon no longer raises
+`IN_EXIT_PRESSED` immediately - it starts a `FADE_OUT` instead (captures
+the current alpha as the ease-from point, so pressing exit mid fade-in
+doesn't jump); once that reaches full black, `nativeEndFrame` sets
+`ctx->fadeOutComplete`, and the *next* `nativeUpdateInput` call is what
+actually raises `IN_EXIT_PRESSED` - checked ahead of both modes' input
+handling and any focus/placement early-return, so exit can't get stuck
+mid-fade if the session loses focus. This means `finish()` only ever
+lands on a frame the user can no longer see anything of.
+
+**Performance level.** Added `XR_EXT_performance_settings` (detected like
+every other optional extension here, enabled conditionally, `enabledExts`
+bumped from 9 to 10 slots to fit it). At the same `XR_SESSION_STATE_READY`
+point the fade kicks off, also calls
+`xrPerfSettingsSetPerformanceLevelEXT()` for both `CPU_EXT` and `GPU_EXT`
+domains at `SUSTAINED_HIGH_EXT` (not `BOOST_EXT`, which the spec frames as
+a short-burst allowance - a stream runs for the whole session). This is
+additive to, not a replacement for, the existing
+`com.oculus.intent.category.VR` intent filter that already marks this as
+an immersive app to the scheduler; it's an explicit ask rather than
+hoping the runtime's default pick is generous. Whether it produces a
+measurable difference (this device may already have picked a high level
+on its own, same as the shipping-config-costs-nothing finding elsewhere
+in this project) is unverified.
+
+## Live on-device round two: real bugs found by actually using it
+
+A second headset pass, this time exercising the fixes above for real
+(brightness/curve sliders, corner handles, glow) instead of just reasoning
+through them. Found several real bugs the first pass's static reading
+missed entirely:
+
+**Slider thumb rendered as a hard square, not a circle - and the glow
+halo didn't fade, it just stopped dead at a sharp edge.** Same root
+cause in both places: `XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT`'s
+blend equation (`Color_dst = Color_src + Color_dst*(1-Alpha_src)`) expects
+premultiplied source color - i.e. color must already shrink toward black
+as alpha shrinks toward zero. The slider track already did this
+(`p[0]=p[1]=p[2]=a`); the thumb didn't (`p[0]=p[1]=p[2]=255` regardless of
+`a`), and the glow halo didn't either (fixed `r,g,b` regardless of `a`).
+A "transparent" texel with full-strength color still adds that color at
+full strength under this blend mode, so both rendered as if alpha were
+pinned at 255 everywhere except the literal quad boundary. Fixed both to
+premultiply, matching the track. Also, while chasing "the glow is too
+big and doesn't follow the curve": the halo was always a flat quad even
+when the screen itself renders as a curved cylinder - added a matching
+cylinder path (same radius/axis math as the screen's own, `centralAngle`/
+`aspectRatio` scaled by the same margin factor) so it actually hugs a
+curved screen instead of a flat rectangle sitting in front of one.
+Shrunk `GLOW_MARGIN_FRAC` further (0.18->0.10), bumped `GLOW_HALO_TEX`
+64->128, and switched the linear alpha ramp to a smoothstep ease so the
+fade reads as a fade instead of a ramp over a handful of texels.
+
+**Dragging the slider thumb didn't work, and it also snapped the corner
+resize handle.** `updateTopBar()` sets `ctx->grabMode = GRAB_SLIDER` and
+owns that grab's entire lifecycle itself - but `applyGrab()` (the
+screen's own move/resize state machine) ran unconditionally every frame
+regardless, and its very first check (`if (ctx->grabMode != GRAB_NONE)`)
+doesn't know what `GRAB_SLIDER` is. It read `ctx->grabByTrigger`/
+`ctx->grabHand`, both meaningless for a slider grab, decided the grab
+had been released, reset `grabMode` to `GRAB_NONE`, and then - same
+frame, same stray hover state - could immediately hand it to
+`GRAB_RESIZE` if the ray also happened to land in the screen's corner
+zone. Fixed by skipping `applyGrab()` entirely while `grabMode ==
+GRAB_SLIDER`; that state is `updateTopBar()`'s alone now.
+
+**Corner resize handle sat half on top of the screen's own corner.**
+`local.x/y` placed it exactly at the corner (`±0.5*screenWidth`), not
+outside it. Added `CORNER_GAP_FRAC` (same standoff convention as the
+move bar's `BAR_GAP_FRAC`) so it now sits fully clear of the picture.
+
+**Glow-toggle icon didn't get the 2x sizing pass the rest of the top bar
+got.** `GLOW_TOGGLE_SIZE_M` was missed when `TOPBAR_ITEM_SIZE_M` doubled
+earlier - doubled it too (0.06->0.12).
+
+**Brightness icon was rendering as a blank white block.** The pre-made
+asset was authored as a filled two-tone glyph (opaque black curve +
+opaque white fill, both alpha 255) instead of this app's actual
+convention for every other top-bar icon (a white glyph, alpha-shaped,
+transparent everywhere else). Replaced with a plain sun glyph matching
+that convention.
+
+**Exit fade shortened 2s -> 1s** per feedback that 2 felt long.
+
+**Keyboard: root-caused fully, then pulled from the top bar anyway.**
+The `oculus.software.overlay_keyboard` manifest fix from the previous
+round was real and correct - confirmed via logcat that the entire chain
+fires end to end: native hit-test -> `IN_KEYBOARD_TOGGLE` -> Java
+dispatch -> `toggleKeyboard()` -> `InputMethodManager.toggleSoftInput()`
+-> Horizon OS's own `KeyboardInputMethodService` logging
+`onShowInputRequested package: com.limelight.debug`. The OS genuinely
+accepts the request. But the panel never actually appears, and Horizon
+OS's own logs show why:
+```
+W DynamicObjectClient: FIXME: failed to enable keyboard tracking
+W DynamicObjectClient: Failed to enable KeyboardTrackingFidelity.
+```
+literally a `FIXME` left in Meta's shipped code, right after
+`ObjectTrackingEngine::startTrackingKeyboard()` registers the keyboard
+successfully. Earlier in the same log: `"Incompatible features Keyboard
+and SurfaceInputs are requested ON -- stopping keyboard tracking"` - this
+app requests hand-tracking (Horizon calls it "SurfaceInputs" internally),
+and the user was in fact on hand-tracking (bare hands, no controllers)
+during every failed test. Everything points to a genuine Horizon OS
+limitation: the system keyboard's positioning can't come up while
+hand-tracking is the active input mode, independent of anything this app
+does. Decision: pull the keyboard icon from the top bar for now
+(`TOPBAR_ITEM_COUNT` 5->4, `TOPBAR_KEYBOARD_INDEX` removed, indices
+renumbered) rather than ship a button that silently does nothing for
+hand-tracking users - who are apparently the norm, not the exception.
+The underlying `IN_KEYBOARD_TOGGLE` plumbing (Java `toggleKeyboard()`,
+`onVrKeyboardToggleRequested()`, the manifest flag) is left in place,
+just unreachable - re-adding the icon later is the only step needed if
+Horizon OS ever fixes this, or if a controller-only code path is worth
+carrying separately.
+
+**This build is now the release build, not debug.** Per the user: this
+fork isn't a debug/test app, it's the actual Virtual Moonlight people
+use - `com.limelight.debug` has been uninstalled from the test device in
+favour of the signed `nonRootRelease` build (`com.limelight.unofficial`,
+per upstream Moonlight's own applicationId convention for third-party
+release builds - see the big comment in `app/build.gradle`). All testing
+from here on should target that build, not debug.
+
 ## Not yet verified / next up
 
-- The actual on-device feel of the top bar and slider in both modes (needs
-  a real PC-connected session).
-- Ambient glow v1: whether the averaged colour actually reads as pleasant
-  "bias lighting" rather than a muddy tint, and whether per-frame texture
-  re-upload while visible has any measurable cost - only reasoned through,
-  never run, since `initGl()`/`initGlow()` only execute once a real VR
-  session starts (a PC connection), which nothing in this dev environment
-  can trigger.
+- The corner-handle widening (`CORNER_HOVER`) is a symmetric hover-zone
+  change, not an asymmetric outward shift - may not fully match "expand
+  the handles off the screen edge" if that meant something more specific.
 - The 3D-effect toggle specifically: repeated on/off cycling within one
   session (does `reconcileDepthThread()` actually behave under rapid
   double-taps, does the depth EGL context survive several start/stop
@@ -315,3 +495,12 @@ that would take:
   Settings) haven't had a pass yet, and are actually easier to iterate on
   without a headset worn (adb can drive/screenshot a normal Activity in a
   way it can't drive an immersive OpenXR session).
+- Separately flagged, not yet root-caused: an earlier on-device build
+  showed the old mode tab bar and no version number in the corner despite
+  a byte-verified build - unclear if still reproducible now that
+  Productivity Mode's tab has actually been removed from this app.
+- Performance level (`SUSTAINED_HIGH_EXT`): still no way to confirm from
+  outside a session whether it changed anything measurable.
+- Whether the fixes in this entry actually look/feel right on the release
+  build specifically (all verification so far happened on the now-removed
+  debug build).
