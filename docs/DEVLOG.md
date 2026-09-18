@@ -495,12 +495,54 @@ from here on should target that build, not debug.
   Settings) haven't had a pass yet, and are actually easier to iterate on
   without a headset worn (adb can drive/screenshot a normal Activity in a
   way it can't drive an immersive OpenXR session).
-- Separately flagged, not yet root-caused: an earlier on-device build
-  showed the old mode tab bar and no version number in the corner despite
-  a byte-verified build - unclear if still reproducible now that
-  Productivity Mode's tab has actually been removed from this app.
 - Performance level (`SUSTAINED_HIGH_EXT`): still no way to confirm from
   outside a session whether it changed anything measurable.
-- Whether the fixes in this entry actually look/feel right on the release
-  build specifically (all verification so far happened on the now-removed
-  debug build).
+
+## beta06: multi-corner glow, and the tab-bar mystery finally solved
+
+**The old mode tab bar mystery, root-caused.** Several sessions back, an
+on-device build kept showing the Gaming/Productivity tab bar on the
+PC-select screen despite the portrait layout (`layout/activity_pc_view.xml`)
+having `modeTabBar` set to `visibility="gone"` back in `bfc2d1ef`, verified
+byte-for-byte in the installed APK. Never re-investigated at the time since
+it wasn't blocking anything. Root cause: Horizon OS renders that 2D panel
+app in **landscape**, and `layout-land/activity_pc_view.xml` is a
+completely separate resource file - `bfc2d1ef` only ever touched the
+portrait one. The landscape file's `modeTabBar` never had a visibility
+attribute at all (defaulting to visible), while `productivityPanel`
+right below it in the same file *did* get hidden, which is presumably
+why this got missed - it looked done. Fixed.
+
+**Ambient glow now samples all four corners, not one average for the
+whole frame.** The v1 downscale (`GLOW_TEX_SIZE` 8x8 box filter) used to
+average all 64 texels into one `(r,g,b)` - a flat wash, not real bias
+lighting. `computeGlowColor()` now averages each quadrant of that same
+8x8 buffer separately into four corner colours
+(`ctx->glowCornerR/G/B[GLOW_CORNER_TL/TR/BL/BR]`), and `updateGlowHalo()`
+bilinearly blends between them per texel based on the same `(nx, ny)`
+coordinates it already uses for the fade shape - standard 4-corner lerp,
+so the halo now actually picks up what colour is near each edge of the
+screen instead of tinting uniformly. No new render pass or texture size
+change; same downscale buffer, split differently on the CPU side.
+
+## Not yet verified / next up
+
+- The multi-corner glow and the tab-bar fix, on a real headset - built and
+  installed but not yet visually confirmed (couldn't get a fresh
+  screenshot from the device this round).
+- Whether the corner quadrant's top/bottom assignment in
+  `computeGlowColor()` (row 0 of `glReadPixels` = bottom, per standard GL
+  convention) actually lines up with `updateGlowHalo()`'s own `ny`
+  convention (0 = top) - reasoned through, not confirmed visually. If the
+  glow's top/bottom colours look swapped, that's the first place to look.
+- The 3D-effect toggle specifically: repeated on/off cycling within one
+  session (does `reconcileDepthThread()` actually behave under rapid
+  double-taps, does the depth EGL context survive several start/stop
+  cycles cleanly) has only been reasoned through, not run on a headset.
+- Further UI/UX targets beyond the top bar: the flat 2D screens (PC-select,
+  Settings) haven't had a pass yet, and are actually easier to iterate on
+  without a headset worn (adb can drive/screenshot a normal Activity in a
+  way it can't drive an immersive OpenXR session).
+- Whether the fixes in the previous entry actually look/feel right on the
+  release build specifically (all verification so far happened on the
+  now-removed debug build).
