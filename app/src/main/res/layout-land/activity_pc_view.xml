@@ -9,6 +9,11 @@
     android:background="@color/ml_bg_panel_gaming"
     tools:context=".PcView" >
 
+    <!-- Gaming/Productivity mode toggle, hidden for now - see the matching
+         comment in layout/activity_pc_view.xml. This landscape variant
+         never got that fix applied, which is why the tab bar kept showing
+         on the Quest panel (landscape) despite the portrait layout being
+         correctly hidden all along. -->
     <LinearLayout
         android:id="@+id/modeTabBar"
         android:layout_width="wrap_content"
@@ -19,7 +24,8 @@
         android:layout_marginBottom="6dp"
         android:orientation="horizontal"
         android:background="@drawable/bg_tabbar_container"
-        android:padding="6dp">
+        android:padding="6dp"
+        android:visibility="gone">
 
         <TextView
             android:id="@+id/tabGaming"

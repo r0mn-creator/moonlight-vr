@@ -209,9 +209,14 @@
 #define DEPTH_MODE_MODEL 6
 
 #define DEPTH_TEX_SIZE 256
-// Small enough that reading it back every frame is free - this only ever
-// feeds one averaged colour, not an image
+// Small enough that reading it back every frame is free. Averaged in four
+// quadrants (see GLOW_CORNER_*), not as one whole-frame colour - 8 divides
+// cleanly into four 4x4 corner blocks.
 #define GLOW_TEX_SIZE 8
+#define GLOW_CORNER_TL 0
+#define GLOW_CORNER_TR 1
+#define GLOW_CORNER_BL 2
+#define GLOW_CORNER_BR 3
 
 // setprop this to any new value to dump one frame's worth of warp inputs and
 // outputs, so shader changes can be tried on captured frames off device
@@ -440,7 +445,11 @@ typedef struct {
     GLint glowTexMatrixUniform;
     GLuint glowTexture;
     GLuint glowFbo;
-    float glowR, glowG, glowB;
+    // One colour per screen corner (see GLOW_CORNER_* below), bilinearly
+    // blended across the halo in updateGlowHalo() - v1 only ever had one
+    // averaged colour for the whole frame, which read as a flat wash
+    // rather than actual bias lighting picking up what's near each edge.
+    float glowCornerR[4], glowCornerG[4], glowCornerB[4];
     // User on/off for the effect above - separate from whether it's even
     // computed (computeGlowColor() is skipped entirely when this is off, so
     // disabling it also saves the per-frame downscale cost, not just the
@@ -1643,7 +1652,9 @@ static int initGlow(XrCtx* ctx) {
     // Full passthrough (the default) never shows the dim sphere at all, so
     // starting white is harmless - it only ever multiplies visible alpha
     // once the room actually darkens, by which point a real frame has run.
-    ctx->glowR = ctx->glowG = ctx->glowB = 1.0f;
+    for (int c = 0; c < 4; c++) {
+        ctx->glowCornerR[c] = ctx->glowCornerG[c] = ctx->glowCornerB[c] = 1.0f;
+    }
     return 1;
 }
 
@@ -4792,11 +4803,13 @@ static void runOffsetSearch(XrCtx* ctx, float separation) {
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 }
 
-// Ambient glow v1: box-filter the whole frame down to GLOW_TEX_SIZE and
-// average that in C, same shape as nativeCaptureDepthInput's downscale but
-// independent of it. Only called while the dim sphere is actually visible
-// (see the caller), so this costs nothing at the default full-passthrough
-// level.
+// Box-filter the whole frame down to GLOW_TEX_SIZE, same shape as
+// nativeCaptureDepthInput's downscale but independent of it, then average
+// each quadrant separately instead of the whole buffer - four corner
+// colours instead of v1's single whole-frame average, so the halo can
+// actually pick up what's near each edge instead of one flat wash. Only
+// called while the dim sphere is actually visible (see the caller), so
+// this costs nothing at the default full-passthrough level.
 static void computeGlowColor(XrCtx* ctx, const float* texMatrix) {
     if (ctx->glowFbo == 0) {
         return;
@@ -4823,16 +4836,30 @@ static void computeGlowColor(XrCtx* ctx, const float* texMatrix) {
     glReadPixels(0, 0, GLOW_TEX_SIZE, GLOW_TEX_SIZE, GL_RGBA, GL_UNSIGNED_BYTE, px);
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
-    const int count = GLOW_TEX_SIZE * GLOW_TEX_SIZE;
-    long sumR = 0, sumG = 0, sumB = 0;
-    for (int i = 0; i < count; i++) {
-        sumR += px[i * 4 + 0];
-        sumG += px[i * 4 + 1];
-        sumB += px[i * 4 + 2];
+    // glReadPixels' row 0 is the bottom of the image (standard GL
+    // convention, untouched here) - so the low-y half of the buffer is the
+    // bottom of the frame, the high-y half is the top.
+    const int half = GLOW_TEX_SIZE / 2;
+    long sumR[4] = { 0, 0, 0, 0 };
+    long sumG[4] = { 0, 0, 0, 0 };
+    long sumB[4] = { 0, 0, 0, 0 };
+    for (int y = 0; y < GLOW_TEX_SIZE; y++) {
+        int top = y >= half;
+        for (int x = 0; x < GLOW_TEX_SIZE; x++) {
+            int right = x >= half;
+            int corner = (top ? GLOW_CORNER_TL : GLOW_CORNER_BL) + (right ? 1 : 0);
+            const unsigned char* p = px + ((y * GLOW_TEX_SIZE) + x) * 4;
+            sumR[corner] += p[0];
+            sumG[corner] += p[1];
+            sumB[corner] += p[2];
+        }
     }
-    ctx->glowR = (float)sumR / (count * 255.0f);
-    ctx->glowG = (float)sumG / (count * 255.0f);
-    ctx->glowB = (float)sumB / (count * 255.0f);
+    const int quadrantCount = half * half;
+    for (int c = 0; c < 4; c++) {
+        ctx->glowCornerR[c] = (float)sumR[c] / (quadrantCount * 255.0f);
+        ctx->glowCornerG[c] = (float)sumG[c] / (quadrantCount * 255.0f);
+        ctx->glowCornerB[c] = (float)sumB[c] / (quadrantCount * 255.0f);
+    }
 }
 
 // The halo's shape is a soft ring hugging the screen's own rectangle,
@@ -4849,9 +4876,6 @@ static void updateGlowHalo(XrCtx* ctx) {
     }
 
     const int n = GLOW_HALO_TEX;
-    unsigned char r = (unsigned char)(ctx->glowR * 255.0f + 0.5f);
-    unsigned char g = (unsigned char)(ctx->glowG * 255.0f + 0.5f);
-    unsigned char b = (unsigned char)(ctx->glowB * 255.0f + 0.5f);
     // Fraction of the quad, on each side, that the screen's own footprint
     // occupies - the quad itself is sized WIDTH*(1+2*margin), so the screen
     // sits centred in the middle 1/(1+2*margin) of it.
@@ -4875,6 +4899,29 @@ static void updateGlowHalo(XrCtx* ctx) {
             // eases both ends of it so it genuinely looks like light
             // dissipating rather than a translucent rectangle with a cutoff.
             a = a * a * (3.0f - 2.0f * a);
+            // Bilinear blend of the four corner colours - ny near 0 is the
+            // top of the screen (matching computeGlowColor()'s own top/
+            // bottom split), so this is a standard 4-corner lerp, not a
+            // single flat colour like v1. This is what makes the halo
+            // actually pick up what's near each edge instead of one wash.
+            float top = 1.0f - ny, left = 1.0f - nx;
+            float wTL = left * top, wTR = nx * top;
+            float wBL = left * ny, wBR = nx * ny;
+            float rf = ctx->glowCornerR[GLOW_CORNER_TL] * wTL
+                    + ctx->glowCornerR[GLOW_CORNER_TR] * wTR
+                    + ctx->glowCornerR[GLOW_CORNER_BL] * wBL
+                    + ctx->glowCornerR[GLOW_CORNER_BR] * wBR;
+            float gf = ctx->glowCornerG[GLOW_CORNER_TL] * wTL
+                    + ctx->glowCornerG[GLOW_CORNER_TR] * wTR
+                    + ctx->glowCornerG[GLOW_CORNER_BL] * wBL
+                    + ctx->glowCornerG[GLOW_CORNER_BR] * wBR;
+            float bf = ctx->glowCornerB[GLOW_CORNER_TL] * wTL
+                    + ctx->glowCornerB[GLOW_CORNER_TR] * wTR
+                    + ctx->glowCornerB[GLOW_CORNER_BL] * wBL
+                    + ctx->glowCornerB[GLOW_CORNER_BR] * wBR;
+            unsigned char r = (unsigned char)(rf * 255.0f + 0.5f);
+            unsigned char g = (unsigned char)(gf * 255.0f + 0.5f);
+            unsigned char b = (unsigned char)(bf * 255.0f + 0.5f);
             unsigned char* p = px + ((y * n) + x) * 4;
             // Premultiplied - same fix as the slider thumb below. A fixed
             // (r,g,b) regardless of a still adds full-strength colour even
