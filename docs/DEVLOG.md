@@ -546,17 +546,76 @@ in the first place.
   Settings) haven't had a pass yet, and are actually easier to iterate on
   without a headset worn (adb can drive/screenshot a normal Activity in a
   way it can't drive an immersive OpenXR session).
-- Adopting Meta's `XR_FB_hand_tracking_aim` extension for a ready-made aim
-  pose + per-finger pinch strength, instead of this app's hand-rolled
-  joint-distance pinch detection (`jointPinching()`) and hand-rolled ray
-  (`ctx->handRay[]`) - researched, not started. Likely why this app's ray
-  visuals look different from other apps' hand-tracking pointers. Confirmed
-  NOT expected to fix the keyboard-under-hand-tracking limitation (that's
-  gated by a separate hand-tracking "frequency" setting per Meta's docs,
-  which this app's manifest doesn't even override) - see
-  `project_moonlight_vr_custom_handtracking_keyboard_lead` in memory.
 - The keyboard icon remains removed pending a Horizon OS fix or further
   investigation into hand-tracking frequency.
 - GitHub release: beta05 was replaced with the top-bar-bugfix build;
-  beta06 (landscape tab-bar fix + 8-region glow, this entry) is committed
-  and pushed to `master` but not yet cut as its own GitHub release.
+  beta06 (everything below, plus the landscape tab-bar fix + 8-region
+  glow above) is committed and pushed to `master` but not yet cut as its
+  own GitHub release.
+
+## beta06 continued: XR_FB_hand_tracking_aim, XR_FB_passthrough research, PC-select redesign
+
+**Adopted `XR_FB_hand_tracking_aim`.** Detected/enabled like every other
+optional extension here. `jointPinching()` chains an
+`XrHandTrackingAimStateFB` onto the same `xrLocateHandJointsEXT` call it
+already makes (no extra API call) and now prefers Meta's own aim pose over
+`buildHandRay()`'s hand-rolled shoulder-ray math, and the continuous
+per-finger `pinchStrengthIndex` (with hysteresis, same shape as the
+existing `PINCH_ON_M`/`PINCH_OFF_M`) over the raw thumb/index joint-gap
+distance - falls back to the original approach entirely on runtimes
+without the extension (e.g. Pico). Likely explains why this app's
+hand-tracking ray looked different from other apps' - confirmed NOT
+expected to fix the keyboard-under-hand-tracking limitation (separate,
+OS-level "frequency" setting per Meta's docs) - not yet confirmed on a
+headset whether the ray/pinch feel actually improved.
+
+**Researched, parked: `XR_FB_passthrough` would fix the double-tap-exits-
+app bug, but costs Quest-only.** User's finding: double-tapping the side
+of the headset (meant to toggle passthrough without leaving the app)
+instead exits the app entirely, leaving it in passthrough with the app
+closed. Root cause: this app implements passthrough via the generic
+`XR_ENVIRONMENT_BLEND_MODE_ALPHA_BLEND` blend mode, not Meta's own
+`XR_FB_passthrough` extension - a Khronos forum thread indicates Quest's
+system-level passthrough gesture depends on an app having an active,
+proper `XR_FB_passthrough` session to toggle, which this app never
+creates. The real fix (`xrCreatePassthroughFB` + a dedicated passthrough
+composition layer, replacing the blend-mode toggle) is real engineering
+work, not a flag flip, and - per the user's own framing - "once we do it
+this app is pretty much for Quest only," since `XR_FB_passthrough` is
+Meta-specific and this codebase currently also supports Pico. Explicitly
+parked; see `project_moonlight_vr_fb_passthrough_lead` in memory.
+
+**PC-select screen redesigned**: rounded `ml_surface` cards (matching old
+desktop Moonlight's card look, restyled to this app's actual palette - no
+new colors) replace the bare top-left icon grid, real centering (both
+axes, backing off vertically once content overflows one screen so it
+falls back to a normal scrollable grid with the next row peeking in at
+the bottom), and hold-to-favorite (2s, persisted, star badge, favorites
+sort first in normal reading order). Two real bugs found and fixed along
+the way:
+- `RelativeLayout`'s own `android:gravity` is a no-op for centering
+  children - the container had relied on it the whole time. Only a
+  child's own `layout_center*` attributes do anything.
+- `GridView`'s `wrap_content` width/height does NOT shrink to
+  `numColumns*columnWidth` despite the name - confirmed via logcat
+  (`numColumns` correctly read back as set, `getWidth()` still reported
+  the full available width). Centering is computed by hand instead:
+  `numColumns` driven off the real PC count (capped at 4), leftover
+  space applied as `GridView` padding.
+- Giving the card's background container `focusable="true"` (to give the
+  press/focus state selector something to key off) silently broke the
+  `GridView`'s own `OnItemClickListener` - a focusable/clickable
+  descendant intercepts the touch before the parent `AdapterView`'s own
+  click handling ever sees it. `duplicateParentState="true"` gets the
+  same visual feedback without stealing the event - a real, easy-to-repeat
+  mistake worth remembering for any future custom list/grid item
+  backgrounds in this app.
+
+Iterated live against an HTML mockup artifact first (several rounds:
+removed an unrequested stats bar becoming the "keep it" default, fixed
+the wordmark to say "Virtual Moonlight" not upstream's "Moonlight", fixed
+an unreadable dark-on-dark render caused by the browser's own forced-dark
+heuristic fighting the page's intentional dark palette - fixed with an
+explicit `color-scheme: dark`) before touching real Android layouts,
+which caught the wrong-app-name and wrong-color-scheme mistakes for free
+without needing a device round-trip.
